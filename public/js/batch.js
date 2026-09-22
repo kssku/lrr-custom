@@ -12,6 +12,7 @@ Batch.treatedArchives = 0;
 Batch.totalArchives = 0;
 Batch.currentOperation = "";
 Batch.currentPlugin = "";
+Batch.pageSize = undefined;
 
 Batch.initializeAll = function () {
     // bind events to DOM
@@ -125,8 +126,13 @@ Batch.loadSelectionOnly = function (ids) {
 };
 
 /**
- * Load the full archive list from the API.
+ * Load the full archive list from the API, page by page.
  * Hides the selection banner (if present) and prechecks untagged archives.
+ *
+ * CUSTOM FORK (feature/path-hash-id): the API paginates /api/archives via ?start=N
+ * (page size comes from the server's pagesize config). Pulling every page here keeps
+ * the list complete while each request stays small -- the old single unpaged call
+ * enumerated every archive ID server-side and took over a minute.
  */
 Batch.loadAllArchives = function () {
     $("#archivelist").empty();
@@ -138,24 +144,51 @@ Batch.loadAllArchives = function () {
     // Clear selection if present
     localStorage.removeItem("msmSelection");
 
-    Server.callAPI("/api/archives", "GET", null, I18N.ArchiveListLoadFailure,
-        (data) => {
-            data.forEach((archive) => {
-                const escapedTitle = LRR.encodeHTML(archive.title) + (archive.isnew === "true" ? " 🆕" : "");
-                const html = `<li><input type='checkbox' name='archive' id='${archive.arcid}' class='archive' ><label for='${archive.arcid}'>${escapedTitle}</label></li>`;
-                $("#archivelist").append(html);
-            });
+    // Page size is re-learned from the first page of each load
+    Batch.pageSize = undefined;
 
-            if (data.length > 0) $("#no-archives-msg").hide();
-
-            Server.callAPI("/api/archives/untagged", "GET", null, I18N.UntaggedLoadFailure,
-                (data) => { preCheckInternal(data); },
-            );
-        },
-    ).finally(() => {
+    Batch.loadArchivePage(0, 0).finally(() => {
         $("#arclist-container").show();
         $("#check-uncheck").show();
         $("#loading-placeholder").hide();
+
+        // Precheck untagged archives once every page is in the DOM
+        Server.callAPI("/api/archives/untagged", "GET", null, I18N.UntaggedLoadFailure,
+            (data) => { preCheckInternal(data); },
+        );
+    });
+};
+
+/**
+ * Fetch one page of archives and append it, then recurse until a short page arrives.
+ * @param {number} start Index of the first archive to fetch
+ * @param {number} loaded Total archives appended so far
+ * @returns {Promise<number>} Total archives appended once all pages are loaded
+ */
+Batch.loadArchivePage = function (start, loaded) {
+    return Server.callAPISilent(`/api/archives?start=${start}`, "GET").then((data) => {
+        if (!Array.isArray(data) || data.length === 0) return loaded;
+
+        data.forEach((archive) => {
+            const escapedTitle = LRR.encodeHTML(archive.title) + (archive.isnew === "true" ? " 🆕" : "");
+            const html = `<li><input type='checkbox' name='archive' id='${archive.arcid}' class='archive' ><label for='${archive.arcid}'>${escapedTitle}</label></li>`;
+            $("#archivelist").append(html);
+        });
+
+        if (data.length > 0) $("#no-archives-msg").hide();
+
+        const total = loaded + data.length;
+
+        // The server doesn't echo its page size back, so learn it from the first
+        // page. A page shorter than that means we've reached the end of the list.
+        // (start=0 on an empty library returns 0 entries and stops immediately.)
+        if (Batch.pageSize === undefined) Batch.pageSize = data.length;
+        if (data.length < Batch.pageSize) return total;
+
+        return Batch.loadArchivePage(start + data.length, total);
+    }).catch((error) => {
+        LRR.showErrorToast(I18N.ArchiveListLoadFailure, error);
+        return loaded;
     });
 };
 

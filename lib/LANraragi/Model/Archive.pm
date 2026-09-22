@@ -62,22 +62,50 @@ sub get_title ($id) {
 sub generate_archive_list ( $start = undef ) {
 
     my $redis = LANraragi::Model::Config->get_redis;
-    my @keys  = $redis->keys('????????????????????????????????????????');
-    $redis->quit;
+    my @keys;
 
-    if ( defined($start) && $start >= 0 ) {
+    # CUSTOM FORK (feature/path-hash-id): the ID list lives in the arcids_idx zset
+    # (same db as the archive hashes) so paging can be pushed down to Redis.
+    #
+    # Upstream did `KEYS ????????...` here, which returns ALL archive IDs in one
+    # shot: 2.0s server-side scan plus ~6.8MB of response to deserialize, for
+    # every request, page or not. ZRANGE over the same IDs costs 2ms for a page.
+    #
+    # The zset is maintained by add_archive_to_redis / delete_archive /
+    # change_archive_id. If it is missing or empty (e.g. a fork upgrade on an
+    # existing DB before migrate_arcids.pl ran), fall back to KEYS so the
+    # endpoint keeps working.
+    if ( $redis->exists('arcids_idx') ) {
 
-        # Mirror the upstream search paging: the page size is a server preference.
-        my $pagesize = LANraragi::Model::Config->get_pagesize;
+        if ( defined($start) && $start >= 0 ) {
 
-        if ( $start >= scalar(@keys) ) {
-            @keys = ();
+            # Mirror the upstream search paging: the page size is a server preference.
+            my $pagesize = LANraragi::Model::Config->get_pagesize;
+            my $end      = $start + $pagesize - 1;
+            @keys = $redis->zrange( 'arcids_idx', $start, $end );
         } else {
-            my $end = $start + $pagesize - 1;
-            $end = $#keys if $end > $#keys;
-            @keys = @keys[ $start .. $end ];
+            @keys = $redis->zrange( 'arcids_idx', 0, -1 );
+        }
+    } else {
+
+        # Legacy fallback: no zset yet, enumerate the archive hashes directly.
+        @keys = $redis->keys('????????????????????????????????????????');
+
+        if ( defined($start) && $start >= 0 ) {
+
+            my $pagesize = LANraragi::Model::Config->get_pagesize;
+
+            if ( $start >= scalar(@keys) ) {
+                @keys = ();
+            } else {
+                my $end = $start + $pagesize - 1;
+                $end = $#keys if $end > $#keys;
+                @keys = @keys[ $start .. $end ];
+            }
         }
     }
+
+    $redis->quit;
 
     return get_archive_json_multi(@keys);
 }
@@ -444,6 +472,10 @@ sub delete_archive ($id) {
     }
 
     $redis->del($id);
+
+    # CUSTOM FORK (feature/path-hash-id): keep the ID index in sync.
+    $redis->zrem( 'arcids_idx', $id );
+
     $redis->quit();
 
     LANraragi::Utils::Database::update_indexes( $id, $oldtags, "" );

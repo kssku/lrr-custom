@@ -61,6 +61,16 @@ sub add_archive_to_redis ( $id, $file, $redis, $redis_search ) {
     # Throw a decode in there just in case the filename is already UTF8
     set_title( $id, LANraragi::Utils::Redis::redis_decode($name) );
 
+    # CUSTOM FORK (feature/path-hash-id): register the new ID in the paging index.
+    # The score is a monotonic sequence number so pages stay stable over time;
+    # numbers are never reused, so a deletion cannot shift an existing page.
+    # Only assigned when the index already exists -- migrate_arcids.pl creates it
+    # (and must be run before this fork is deployed, otherwise use the KEYS path).
+    if ( $redis->exists('arcids_idx') ) {
+        my $seq = $redis->incr('arcids_idx_seq');
+        $redis->zadd( 'arcids_idx', $seq, $id );
+    }
+
     # New archives can't be in a tank, so add them to the search set by default
     $redis_search->sadd( "LRR_TANKGROUPED", $id );
 
@@ -81,6 +91,14 @@ sub change_archive_id ( $old_id, $new_id ) {
 
     if ( $redis->exists($old_id) ) {
         $redis->rename( $old_id, $new_id );
+    }
+
+    # CUSTOM FORK (feature/path-hash-id): move the ID in the paging index,
+    # keeping its original score so the archive stays on the same page.
+    my $score = $redis->zscore( 'arcids_idx', $old_id );
+    if ( defined($score) ) {
+        $redis->zrem( 'arcids_idx', $old_id );
+        $redis->zadd( 'arcids_idx', $score, $new_id );
     }
 
     # Update archive size
