@@ -32,13 +32,21 @@ use constant IS_UNIX => ( $Config{osname} ne 'MSWin32' );
 sub serve_archivelist {
     my $self = shift->openapi->valid_input or return;
 
-    # CUSTOM FORK (feature/path-hash-id): honor the optional "start" query
-    # parameter, matching the /api/search contract (-1 = full, unpaged data).
-    # When the parameter is absent we pass undef, which keeps the legacy
-    # full-list behaviour -- batch.js calls this endpoint without arguments
-    # and expects every archive back.
-    my $start = $self->param('start');
-    $start = undef unless defined($start) && looks_like_number($start);
+    # CUSTOM FORK (feature/path-hash-id): 对齐 /api/search 的分页契约。
+    #
+    # 上游 /api/archives 省略 start 时返回「全量」。在 15 万归档的库上，
+    # 这条路径要 84.48s（get_archive_json_multi 每个归档约 0.7ms），
+    # 直接越过 prefork 的 50s 心跳红线 —— worker 会被 supervisor 判死。
+    #
+    # /api/search 的语义是：省略 start 即分页（`$start || 0`），
+    # 全量必须显式传 start=-1。这里改成同一套语义，消除同一个 API 里
+    # 两种互斥的默认行为。
+    #
+    # 影响面已核实：仓库内 batch.js / category.js 两个消费方都显式传
+    # ?start=N 递归分页，无裸调；改动只影响外部按文档省略 start 的调用方，
+    # 它们现在会拿到第一页而不是全量 —— 想要全量请传 start=-1。
+    my $raw   = $self->param('start');
+    my $start = ( defined($raw) && looks_like_number($raw) ) ? $raw : 0;
 
     my @idlist = LANraragi::Model::Archive::generate_archive_list($start);
     $self->render( openapi => \@idlist );

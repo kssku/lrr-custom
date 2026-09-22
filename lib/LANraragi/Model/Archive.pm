@@ -49,9 +49,14 @@ sub get_title ($id) {
 # This doesn't include Tanks.
 #
 # $start controls paging, mirroring the /api/search contract:
-#   undef / 0  -> full, unpaged list (legacy behaviour, kept for back-compat)
-#   -1         -> full, unpaged list (explicit)
-#   N >= 1     -> the page of get_pagesize() archives starting at offset N
+#   undef      -> treated as 0 by the controller (first page), see Archive.pm
+#   0 / N >= 0 -> the page of get_pagesize() archives starting at offset N
+#   -1         -> full, unpaged list (explicit opt-in)
+#
+# CUSTOM FORK (feature/path-hash-id): 注意 undef 本身在这里仍是「全量」。
+# 调用方 Controller/Api/Archive.pm 已保证不会把 undef 传进来（省略 start
+# 时归一化为 0）。保留 undef = 全量 是为了兼容仓库内其它直接调用方，
+# 但没有任何 HTTP 路径可以再触发它。
 #
 # CUSTOM FORK (feature/path-hash-id): upstream always builds JSON for the WHOLE
 # database here. get_archive_json_multi costs ~0.7ms per archive, so on a large

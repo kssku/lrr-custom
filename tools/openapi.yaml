@@ -1467,11 +1467,12 @@ paths:
           description: >-
             From which archive in the total result count this enumeration should
             start. The total number of archives displayed depends on the
-            server-side page size preference.  
+            server-side page size preference.
 
 
-            Use "-1" to get the full, unpaged data. When omitted, the full,
-            unpaged data is returned as well (legacy behaviour).
+            Use "-1" to get the full, unpaged data. When omitted, pagination
+            starts at 0 (matching the /api/search contract) and you receive the
+            first page only -- not the full list.
           schema:
             type: integer
       responses:
