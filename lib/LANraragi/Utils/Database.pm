@@ -239,8 +239,17 @@ sub build_json ( $id, %hash ) {
 
     $file = create_path($file);
 
-    # Return undef if the file doesn't exist.
-    return unless ( defined($file) && -e $file );
+    # CUSTOM FORK (feature/path-hash-id): upstream unconditionally stats the file here.
+    # On a remote FUSE mount a COLD stat can cost hundreds of ms; a warm one is
+    # build_json is called once per archive by generate_archive_list, which /api/archives
+    # and the category page invoke on every request -- so on a large library the first
+    # call extrapolates to ~17 HOURS of stat() time and the endpoint never returns.
+    # Existence checking belongs in the periodic DB cleanup task (see Database.pm
+    # cleanup_database), not on this hot path. Set LRR_STRICT_FILE_CHECK=1 to restore
+    # the upstream behaviour.
+    if ( $ENV{LRR_STRICT_FILE_CHECK} ) {
+        return unless ( defined($file) && -e $file );
+    }
 
     # Parameters have been obtained, let's decode them.
     ( $_ = LANraragi::Utils::Redis::redis_decode($_) ) for ( $name, $title, $tags, $summary );

@@ -45,13 +45,39 @@ sub get_title ($id) {
 
 # Functions used when dealing with archives.
 
-# Generates an array of all the archive JSONs in the database that have existing files.
-# This doesn't include Tanks. 
-sub generate_archive_list {
+# Generates an array of the archive JSONs in the database.
+# This doesn't include Tanks.
+#
+# $start controls paging, mirroring the /api/search contract:
+#   undef / 0  -> full, unpaged list (legacy behaviour, kept for back-compat)
+#   -1         -> full, unpaged list (explicit)
+#   N >= 1     -> the page of get_pagesize() archives starting at offset N
+#
+# CUSTOM FORK (feature/path-hash-id): upstream always builds JSON for the WHOLE
+# database here. get_archive_json_multi costs ~0.7ms per archive, so on a large
+# archives a single call spends ~105s building JSON that the caller then throws
+# away -- /api/archives and the category page both do this on every request.
+# Slicing the ID list BEFORE calling get_archive_json_multi keeps the cost
+# proportional to the page actually requested (100 archives -> ~0.07s).
+sub generate_archive_list ( $start = undef ) {
 
     my $redis = LANraragi::Model::Config->get_redis;
     my @keys  = $redis->keys('????????????????????????????????????????');
     $redis->quit;
+
+    if ( defined($start) && $start >= 0 ) {
+
+        # Mirror the upstream search paging: the page size is a server preference.
+        my $pagesize = LANraragi::Model::Config->get_pagesize;
+
+        if ( $start >= scalar(@keys) ) {
+            @keys = ();
+        } else {
+            my $end = $start + $pagesize - 1;
+            $end = $#keys if $end > $#keys;
+            @keys = @keys[ $start .. $end ];
+        }
+    }
 
     return get_archive_json_multi(@keys);
 }

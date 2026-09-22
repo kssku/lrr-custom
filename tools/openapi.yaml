@@ -1460,6 +1460,20 @@ paths:
         You can use the IDs of this JSON with the other endpoints.
       tags:
         - archives
+      parameters:
+        - name: start
+          in: query
+          required: false
+          description: >-
+            From which archive in the total result count this enumeration should
+            start. The total number of archives displayed depends on the
+            server-side page size preference.  
+
+
+            Use "-1" to get the full, unpaged data. When omitted, the full,
+            unpaged data is returned as well (legacy behaviour).
+          schema:
+            type: integer
       responses:
         '200':
           description: Array of archives

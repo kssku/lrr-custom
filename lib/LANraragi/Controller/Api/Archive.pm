@@ -30,8 +30,17 @@ use constant IS_UNIX => ( $Config{osname} ne 'MSWin32' );
 
 
 sub serve_archivelist {
-    my $self   = shift->openapi->valid_input or return;
-    my @idlist = LANraragi::Model::Archive::generate_archive_list;
+    my $self = shift->openapi->valid_input or return;
+
+    # CUSTOM FORK (feature/path-hash-id): honor the optional "start" query
+    # parameter, matching the /api/search contract (-1 = full, unpaged data).
+    # When the parameter is absent we pass undef, which keeps the legacy
+    # full-list behaviour -- batch.js calls this endpoint without arguments
+    # and expects every archive back.
+    my $start = $self->param('start');
+    $start = undef unless defined($start) && looks_like_number($start);
+
+    my @idlist = LANraragi::Model::Archive::generate_archive_list($start);
     $self->render( openapi => \@idlist );
 }
 
