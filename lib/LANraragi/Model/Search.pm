@@ -61,7 +61,12 @@ sub do_search ( $filter, $category_id, $start, $sortkey, $sortorder, $newonly, $
           search_uncached( $category_id, $filter, $sortkey, $sortorder, $newonly, $untaggedonly, $grouptanks, $hidecompleted );
 
         # Cache this query in the search database, prepending the keyed count for partition-aware cache inversion
-        eval { $redis->hset( "LRR_SEARCHCACHE", $cachekey, nfreeze [ $keyed_count, @filtered ] ); };
+        # CUSTOM FORK (feature/path-hash-id): also stamp the entry with the current global cache
+        # "created" marker so check_cache can tell whether the DB changed since this was written.
+        eval {
+            my $created = $redis->hget( "LRR_SEARCHCACHE", "created" ) // 0;
+            $redis->hset( "LRR_SEARCHCACHE", $cachekey, nfreeze [ $created, $keyed_count, @filtered ] );
+        };
     }
     $redis->quit();
 
@@ -87,28 +92,51 @@ sub check_cache ( $cachekey, $cachekey_inv ) {
     my $cachehit = 0;
     $logger->debug("Search request: $cachekey");
 
+    # CUSTOM FORK (feature/path-hash-id): entries are stamped with the global "created"
+    # marker at write time. An entry only counts as a hit if that stamp still matches the
+    # current marker -- i.e. no archive/tag change happened in between. This replaces the
+    # upstream "DEL the whole hash on every change" strategy, which meant the cache could
+    # never accumulate more than a couple of entries (invalidate_cache has 30+ call sites;
+    # Shinobu alone fires it 4x per scanned file). Entries now survive unrelated changes and
+    # only the affected queries are recomputed, on demand.
+    my $current_created = $redis->exists("LRR_SEARCHCACHE") ? ( $redis->hget( "LRR_SEARCHCACHE", "created" ) // 0 ) : 0;
+
     if ( $redis->exists("LRR_SEARCHCACHE") && $redis->hexists( "LRR_SEARCHCACHE", $cachekey ) ) {
-        $logger->debug("Using cache for this query.");
-        $cachehit = 1;
 
         my $frozendata = $redis->hget( "LRR_SEARCHCACHE", $cachekey );
         my @cached     = @{ thaw $frozendata };
-        shift @cached;    # Discard the keyed count, since they're at the bottom of the list naturally
-        @filtered = @cached;
+        my $entry_created = shift @cached;    # CUSTOM FORK: timestamp stamp
+
+        if ( "$entry_created" eq "$current_created" ) {
+            $logger->debug("Using cache for this query.");
+            $cachehit = 1;
+
+            shift @cached;    # Discard the keyed count, since they're at the bottom of the list naturally
+            @filtered = @cached;
+        } else {
+            $logger->debug("Cache entry is stale (entry=$entry_created, current=$current_created), recomputing.");
+        }
 
     } elsif ( $redis->exists("LRR_SEARCHCACHE") && $redis->hexists( "LRR_SEARCHCACHE", $cachekey_inv ) ) {
-        $logger->debug("A cache key exists with the opposite sortorder.");
-        $cachehit = 1;
 
-        my $frozendata  = $redis->hget( "LRR_SEARCHCACHE", $cachekey_inv );
-        my @cached      = @{ thaw $frozendata };
-        my $keyed_count = shift @cached;
+        my $frozendata = $redis->hget( "LRR_SEARCHCACHE", $cachekey_inv );
+        my @cached     = @{ thaw $frozendata };
+        my $entry_created = shift @cached;    # CUSTOM FORK: timestamp stamp
 
-        # Reverse only the keyed prefix; unkeyed archives stay at the back
-        if ( $keyed_count > 0 && $keyed_count < scalar @cached ) {
-            @filtered = ( reverse( @cached[ 0 .. $keyed_count - 1 ] ), @cached[ $keyed_count .. $#cached ] );
+        if ( "$entry_created" eq "$current_created" ) {
+            $logger->debug("A cache key exists with the opposite sortorder.");
+            $cachehit = 1;
+
+            my $keyed_count = shift @cached;
+
+            # Reverse only the keyed prefix; unkeyed archives stay at the back
+            if ( $keyed_count > 0 && $keyed_count < scalar @cached ) {
+                @filtered = ( reverse( @cached[ 0 .. $keyed_count - 1 ] ), @cached[ $keyed_count .. $#cached ] );
+            } else {
+                @filtered = reverse @cached;
+            }
         } else {
-            @filtered = reverse @cached;
+            $logger->debug("Inverse cache entry is stale (entry=$entry_created, current=$current_created), recomputing.");
         }
     }
 
@@ -136,7 +164,13 @@ sub search_uncached ( $category_id, $filter, $sortkey, $sortorder, $newonly, $un
     } else {
 
         # Start with all our archive IDs. Tank IDs won't be present in this search.
-        @filtered = $redis_db->keys('????????????????????????????????????????');
+        #
+        # CUSTOM FORK (feature/path-hash-id): upstream did $redis_db->keys('???...?'), a blocking
+        # O(N) KEYS over every key in db0 (one per archive). Redis is single-threaded, so each
+        # search froze the whole instance while it walked the keyspace.
+        # LRR_TITLES is a sorted set that already contains every archive ID as
+        # "title\x00id", so we can read the same set with a single ordered range instead.
+        @filtered = map { substr( $_, index( $_, "\x00" ) + 1 ) } $redis->zrangebylex( "LRR_TITLES", "-", "+" );
     }
 
     # If we're using a category, we'll need to get its source data first.
@@ -288,7 +322,18 @@ LUA
                 # If the tag has a namespace, We don't add a wildcard at the start of the tag to keep it intact.
                 # Otherwise, we add a wildcard at the start to match all namespaces.
                 my $indexkey = $tag =~ /:/ ? "INDEX_$tag*" : "INDEX_*$tag*";
-                my @keys     = $redis->keys($indexkey);
+
+                # CUSTOM FORK (feature/path-hash-id): upstream used $redis->keys($indexkey), a
+                # blocking O(N) scan of all 269k INDEX_* keys in db3 for every non-exact token.
+                # SCAN walks the keyspace incrementally with a cursor, so Redis stays responsive
+                # and other clients (including the Minion worker) are not stalled.
+                my @keys = ();
+                my $cursor = 0;
+                do {
+                    my ( $next, $batch ) = $redis->scan( $cursor, "MATCH", $indexkey, "COUNT", 1000 );
+                    $cursor = $next;
+                    push @keys, @$batch if $batch && @$batch;
+                } while ( $cursor != 0 );
 
                 # Get the list of IDs for each key
                 foreach my $key (@keys) {

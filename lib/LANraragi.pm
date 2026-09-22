@@ -212,10 +212,18 @@ sub startup {
     start_minion($self);
 
     # Start File Watcher
-    if ( IS_UNIX ) {
-        shutdown_from_pid( get_temp . "/shinobu.pid" );
+    # CUSTOM FORK (feature/path-hash-id): upstream starts Shinobu unconditionally, but it
+    # walks the whole content dir on every start. On a remote FUSE mount that walk can
+    # and can wedge the process in D state under throttling. This restores the
+    # LRR_DISABLE_SHINOBU=1 switch that the pre-dev container image carried.
+    if ( !$ENV{LRR_DISABLE_SHINOBU} ) {
+        if ( IS_UNIX ) {
+            shutdown_from_pid( get_temp . "/shinobu.pid" );
+        }
+        start_shinobu($self);
+    } else {
+        $self->LRR_LOGGER->info("Shinobu disabled via LRR_DISABLE_SHINOBU.");
     }
-    start_shinobu($self);
 
     # Check if this is a first-time installation.
     first_install_actions();

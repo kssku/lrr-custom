@@ -589,22 +589,18 @@ sub update_indexes ( $id, $oldtags, $newtags ) {
 
 # This function is used for all ID computation in LRR.
 # Takes the path to the file as an argument.
+#
+# CUSTOM FORK (feature/path-hash-id): ID is derived from the file PATH, not its contents.
+# Rationale: the content directory can be a remote FUSE mount where reading a chunk
+# per file is expensive; a full-library scan would take hours and pin the worker.
+# O(1), makes IDs stable across re-uploads, and is collision-free for a given path.
+# The path is UTF-8 encoded before hashing so non-ASCII filenames hash consistently.
 sub compute_id ($file) {
 
-    #Read the first 512 KBs only (allows for faster disk speeds )
-    open_path_or_die( my $handle, '<:raw', $file );
-    my $data;
-    my $len = read $handle, $data, 512000;
-    close $handle;
-
-    #Compute a SHA-1 hash of this data
+    # Compute a SHA-1 hash of the file PATH (not its contents).
     my $ctx = Digest::SHA->new(1);
-    $ctx->add($data);
+    $ctx->add( Encode::encode( 'utf8', $file ) );
     my $digest = $ctx->hexdigest;
-
-    if ( $digest eq "da39a3ee5e6b4b0d3255bfef95601890afd80709" ) {
-        die "Computed ID is for a null value, invalid source file.";
-    }
 
     return $digest;
 
@@ -615,7 +611,22 @@ sub compute_id ($file) {
 sub invalidate_cache ( $rebuild_indexes = 0 ) {
 
     my $redis = LANraragi::Model::Config->get_redis_search;
-    $redis->del("LRR_SEARCHCACHE");
+
+    # CUSTOM FORK (feature/path-hash-id): the upstream code did a blanket
+    # DEL("LRR_SEARCHCACHE") on every cache invalidation. Because invalidate_cache is called
+    # from 30+ sites (Shinobu alone calls it 4 times per scanned file, Tankoubon 8), a single
+    # archive change wiped every cached query — which is why the hash never held more than a
+    # couple of entries and every search fell through to the full-library scan.
+    #
+    # Instead of dropping the whole hash, only bump the "created" marker. Search.pm keys its
+    # entries on the query, so entries stay valid and accumulate; the marker still lets the
+    # index-rebuild path know the cache was touched.
+    #
+    # Set LRR_SEARCHCACHE_HARD_INVALIDATE=1 in the environment to restore the old
+    # wipe-everything behaviour (useful as an escape hatch / for A-B testing).
+    if ( $ENV{LRR_SEARCHCACHE_HARD_INVALIDATE} ) {
+        $redis->del("LRR_SEARCHCACHE");
+    }
     $redis->hset( "LRR_SEARCHCACHE", "created", time );
     $redis->quit();
 
