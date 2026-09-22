@@ -8,6 +8,8 @@ I18N.BackupRestoring = "[% c.lh("Restoring your backup ...") %]";
 I18N.BackupComplete = "[% c.lh("Backup complete! Download will start automatically.") %]";
 
 I18N.ArchiveListLoadFailure = "[% c.lh("Couldn't load the complete archive list! Please reload the page.") %]";
+I18N.NoArchivesInLibrary = "[% c.lh("No Archives in your library yet.") %]";
+I18N.LoadingArchives = "[% c.lh("Loading archives...") %]";
 I18N.TagStatsLoadFailure = "[% c.lh("Couldn't load the tag statistics! Please reload the page.") %]";
 I18N.UntaggedLoadFailure = "[% c.lh("Error getting untagged archives!") %]";
 I18N.ConfirmArchiveDeletion = "[% c.lh("Are you sure you want to delete this archive?") %]";

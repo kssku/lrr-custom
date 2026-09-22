@@ -119,32 +119,107 @@ Category.updateCategoryDetails = function () {
             return upA < upB ? -1 : (upA > upB ? 1 : 0);
         }).appendTo("#tankoubonlist");
 
-        // Sort archive list alphabetically
+        // Uncheck all
+        $("#staticcontent input:checkbox").prop("checked", false);
+
+        // CUSTOM FORK (feature/path-hash-id): 归档列表改为按页拉取。
+        // 上游在这里直接对「服务端已渲染好的全部 <li>」排序并打勾；15 万条时
+        // 服务端渲染要 118s+（撞心跳红线），所以改成前端分页。
+        // 每拉完一页立即排序 + 打勾，保证分类里的归档即使排在第 500 条也能被勾上。
+        Category.pageSize = undefined;
+        Category.loadArchivePage(0, 0).then(() => Category.applyCategoryChecks());
+    } else {
+        // Show predicate field if dynamic
+        $("#predicatefield").show();
+        $("#bookmarklinkfield").hide();
+    }
+};
+
+/**
+ * CUSTOM FORK (feature/path-hash-id): 递归拉取一页归档并追加到 #archivelist。
+ *
+ * 与 batch.js 的 loadArchivePage 同一套路：服务端 /api/archives?start=N 已在
+ * Archive.pm 里把分页下推到 Redis 的 ZRANGE，单页（默认 100 条）约 300ms。
+ * 服务端不回传页大小，所以从第一页学到 pageSize；某页短于 pageSize 即到末尾。
+ *
+ * @param {number} start 本页起始偏移
+ * @param {number} loaded 已追加的条数
+ * @returns {Promise<number>} 全部拉完后的总条数
+ */
+Category.loadArchivePage = function (start, loaded) {
+    return Server.callAPISilent(`/api/archives?start=${start}`, "GET").then((data) => {
+        if (!Array.isArray(data) || data.length === 0) {
+            Category.finishArchiveList(loaded);
+            return loaded;
+        }
+
+        // 首页到达即移除模板里的「Loading archives...」占位符
+        $("#arclist-placeholder").remove();
+
+        data.forEach((archive) => {
+            const escapedTitle = LRR.encodeHTML(archive.title) + (archive.isnew === "true" ? " 🆕" : "");
+            const html = `<li><input type='checkbox' name='archive' id='${archive.arcid}' class='archive' onchange='Category.updateArchiveInCategory(this.id, this.checked)'><label for='${archive.arcid}'>${escapedTitle}</label></li>`;
+            $("#archivelist").append(html);
+        });
+
+        // 每页拉完就对「当前已渲染的项」排序 + 打勾，避免最后一页才处理时
+        // 前面页面的勾选状态被覆盖，也避免分类中靠后的归档漏勾。
         const arclist = $("#archivelist");
         arclist.find("li").sort((a, b) => {
             const upA = $(a).find("label").text().toUpperCase();
             const upB = $(b).find("label").text().toUpperCase();
             return upA < upB ? -1 : (upA > upB ? 1 : 0);
         }).appendTo("#archivelist");
+        Category.applyCategoryChecks();
 
-        // Uncheck all
-        $("#staticcontent input:checkbox").prop("checked", false);
+        if (Category.pageSize === undefined) Category.pageSize = data.length;
+        if (data.length < Category.pageSize) {
+            Category.finishArchiveList(loaded + data.length);
+            return loaded + data.length;
+        }
 
-        // Check items that are in the category (works for both archives and tankoubons)
-        category.archives.forEach((id) => {
-            const checkbox = document.getElementById(id);
+        return Category.loadArchivePage(start + data.length, loaded + data.length);
+    }).catch((error) => {
+        LRR.showErrorToast(I18N.ArchiveListLoadFailure, error);
+        Category.finishArchiveList(loaded);
+        return loaded;
+    });
+};
 
-            if (checkbox != null) {
-                checkbox.checked = true;
-                // Prepend matching <li> element to the top of the list (ew)
-                checkbox.parentElement.parentElement.prepend(checkbox.parentElement);
-            }
-        });
-    } else {
-        // Show predicate field if dynamic
-        $("#predicatefield").show();
-        $("#bookmarklinkfield").hide();
+/**
+ * CUSTOM FORK (feature/path-hash-id): 列表拉完（或失败）后的收尾。
+ * 空库时给出与上游一致的提示文案，避免出现空白区域。
+ */
+Category.finishArchiveList = function (loaded) {
+    $("#arclist-placeholder").remove();
+    if (loaded === 0) {
+        $("#archivelist").append(
+            `<li style="font-style: italic;">${I18N.NoArchivesInLibrary}</li>`
+        );
     }
+};
+
+/**
+ * CUSTOM FORK (feature/path-hash-id): 给「当前已渲染」的归档打上分类勾选。
+ *
+ * 上游是一次性 forEach：找不到 checkbox 就静默跳过。分页后如果分类里某个归档
+ * 还没被渲染出来，勾选会静默丢失（假成功）。所以这里改成每页渲染后都调用，
+ * 找到才勾、找不到就等下一页——最终所有页拉完时全部命中。
+ */
+Category.applyCategoryChecks = function () {
+    const categoryID = document.getElementById("category").value;
+    const category = Category.categories.find((x) => x.id === categoryID);
+    if (!category || !Array.isArray(category.archives)) return;
+
+    category.archives.forEach((id) => {
+        const checkbox = document.getElementById(id);
+
+        if (checkbox != null && !checkbox.checked) {
+            checkbox.checked = true;
+            // Prepend matching <li> element to the top of the list (ew)
+            checkbox.parentElement.parentElement.prepend(checkbox.parentElement);
+        }
+    });
 };
 
 Category.saveCurrentCategoryDetails = function () {

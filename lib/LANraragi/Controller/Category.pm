@@ -22,19 +22,19 @@ sub index {
 
     $redis->quit();
 
-    my @idlist = LANraragi::Model::Archive::generate_archive_list;
-    #Parse the archive list and build <li> elements accordingly.
+    # CUSTOM FORK (feature/path-hash-id): 不再在服务端预渲染全部归档。
+    #
+    # 上游这里调用 generate_archive_list() 拿全量归档再拼 <li>。在 15 万归档的
+    # 库上，这一句要 118s+，直接撞 Mojolicious prefork 的 50 秒心跳红线
+    # （日志里 "has no heartbeat (50 seconds), restarting" 就是这么来的），
+    # 而且生成的 HTML 有十几 MB，浏览器也会卡死。
+    #
+    # 现在归档列表改由前端 category.js 通过 /api/archives?start=N 递归分页拉取
+    # （分页已在 Archive.pm 下推到 Redis 的 ZRANGE，单页 ~300ms）。
+    # 服务端只保留 tankoubon 列表——它数量少，且没有分页接口。
+    #
+    # 注意：$arclist 故意留空，模板里 IF arclist 的分支已改为渲染占位符。
     my $arclist = "";
-
-    #Only show IDs that still have their files present.
-    foreach my $arc (@idlist) {
-        my $title = xml_escape($arc->{title});
-        my $id = xml_escape($arc->{arcid});
-
-        $arclist .=
-          "<li><input type='checkbox' name='archive' id='$id' class='archive' onchange='Category.updateArchiveInCategory(this.id, this.checked)'>";
-        $arclist .= "<label for='$id'> $title</label></li>";
-    }
 
     # Build tank list
     my ( $total, $filtered, @tanks ) = LANraragi::Model::Tankoubon::get_tankoubon_list(-1);

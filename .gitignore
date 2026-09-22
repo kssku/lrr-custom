@@ -16,3 +16,8 @@ Makefile
 oshino
 temp
 win-dist
+
+# 临时备份与一次性验证脚本（不入库，仅本地排障用）
+*.bak-*
+script/dom_*.py
+script/dom_*.png

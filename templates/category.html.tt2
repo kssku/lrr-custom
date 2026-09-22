@@ -141,11 +141,10 @@
                     <div id="archivesection">
                         <h3>[% c.lh("Archives") %]</h3>
                         <ul id="archivelist" style="list-style: none; padding-left: 0; margin: 0;">
-                            [% IF arclist %]
-                                [% arclist %]
-                            [% ELSE %]
-                                <li style="font-style: italic;">[% c.lh("No Archives in your library yet.") %]</li>
-                            [% END %]
+                            [%# CUSTOM FORK (feature/path-hash-id): 归档列表改由 category.js 分页拉取。 %]
+                            [%# 服务端不再注入 arclist（全量渲染会撞 50s 心跳红线），这里只放占位符， %]
+                            [%# 前端首屏拉完后由 JS 替换。保留 id 供 JS 定位。 %]
+                            <li style="font-style: italic;" id="arclist-placeholder">[% c.lh("Loading archives...") %]</li>
                         </ul>
                     </div>
                 </div>

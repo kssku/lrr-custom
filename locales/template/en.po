@@ -205,6 +205,9 @@ msgstr "Archives"
 msgid "No Archives in your library yet."
 msgstr "No Archives in your library yet."
 
+msgid "Loading archives..."
+msgstr "Loading archives..."
+
 # ------End of Category.html.tt2------
 
 # ------Start of Config.html.tt2------

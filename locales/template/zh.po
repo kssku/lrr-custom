@@ -195,6 +195,9 @@ msgstr "取消关联书签按钮时出错："
 msgid "Error getting bookmark category:"
 msgstr "获取书签分类时出错："
 
+msgid "Loading archives..."
+msgstr "正在加载档案……"
+
 # ------End of Category.html.tt2------
 # ------Start of Config.html.tt2------
 msgid "Admin Settings"
