@@ -34,8 +34,8 @@ sub serve_archivelist {
 
     # CUSTOM FORK (feature/path-hash-id): 对齐 /api/search 的分页契约。
     #
-    # 上游 /api/archives 省略 start 时返回「全量」。在 15 万归档的库上，
-    # 这条路径要 84.48s（get_archive_json_multi 每个归档约 0.7ms），
+    # 上游 /api/archives 省略 start 时返回「全量」。在十万级归档的库上，
+    # 这条路径耗时很长（get_archive_json_multi 每个归档都有固定开销），
     # 直接越过 prefork 的 50s 心跳红线 —— worker 会被 supervisor 判死。
     #
     # /api/search 的语义是：省略 start 即分页（`$start || 0`），

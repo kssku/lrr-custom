@@ -123,8 +123,8 @@ Category.updateCategoryDetails = function () {
         $("#staticcontent input:checkbox").prop("checked", false);
 
         // CUSTOM FORK (feature/path-hash-id): 归档列表改为按页拉取。
-        // 上游在这里直接对「服务端已渲染好的全部 <li>」排序并打勾；15 万条时
-        // 服务端渲染要 118s+（撞心跳红线），所以改成前端分页。
+        // 上游在这里直接对「服务端已渲染好的全部 <li>」排序并打勾；大库时
+        // 服务端渲染耗时可达分钟级（撞心跳红线），所以改成前端分页。
         // 每拉完一页立即排序 + 打勾，保证分类里的归档即使排在第 500 条也能被勾上。
         Category.pageSize = undefined;
         Category.loadArchivePage(0, 0).then(() => Category.applyCategoryChecks());

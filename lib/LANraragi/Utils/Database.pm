@@ -260,6 +260,7 @@ sub build_json ( $id, %hash ) {
 
     # CUSTOM FORK (feature/path-hash-id): upstream unconditionally stats the file here.
     # On a remote FUSE mount a COLD stat can cost hundreds of ms; a warm one is
+    # sub-millisecond.
     # build_json is called once per archive by generate_archive_list, which /api/archives
     # and the category page invoke on every request -- so on a large library the first
     # call extrapolates to ~17 HOURS of stat() time and the endpoint never returns.
@@ -621,16 +622,17 @@ sub update_indexes ( $id, $oldtags, $newtags ) {
 # CUSTOM FORK (feature/path-hash-id): ID is derived from the file PATH, not its contents.
 # Rationale: the content directory can be a remote FUSE mount where reading a chunk
 # per file is expensive; a full-library scan would take hours and pin the worker.
-# O(1), makes IDs stable across re-uploads, and is collision-free for a given path.
-# The path is UTF-8 encoded before hashing so non-ASCII filenames hash consistently.
+# Hashing the path is O(1), makes IDs stable across re-uploads, and is collision-free
+# for a given path. The path is UTF-8 encoded before hashing so non-ASCII filenames
+# hash consistently.
 sub compute_id ($file) {
 
     # CUSTOM FORK (feature/rel-path-hash): hash the path RELATIVE to the content dir,
     # not the absolute container path.
     #
     # Was: SHA1("/<install-root>/content/<source>/<shard>/<id>.cbz")
-    #   -> ID depended on the image install path, so any
-    #      upstream image layout change (or moving the library between hosts/mounts) invalidated every ID.
+    #   -> ID depended on the image install path, so any upstream image layout
+    #      change (or moving the library between hosts/mounts) invalidated every ID.
     # Now: SHA1("<source>/<shard>/<id>.cbz")
     #   -> ID depends only on the path under the content root, identical across
     #      hosts and mount points. Safe to move the library between machines.
@@ -645,6 +647,8 @@ sub compute_id ($file) {
     # ("<lo>-<hi>") or by year ("<yyyy>"), and those segment names are pure
     # functions of the item id produced by the ingestion tooling. If that tooling
     # changes its sharding range or year rule, every ID changes again.
+    # Upgrade path: strip ^\d+-\d+$ and ^\d{4}$ path segments here, then re-run
+    # the id migration.
     #
     # The relative path is UTF-8 encoded before hashing so non-ASCII filenames hash
     # consistently.

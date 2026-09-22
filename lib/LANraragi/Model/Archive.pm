@@ -59,8 +59,8 @@ sub get_title ($id) {
 # 但没有任何 HTTP 路径可以再触发它。
 #
 # CUSTOM FORK (feature/path-hash-id): upstream always builds JSON for the WHOLE
-# database here. get_archive_json_multi costs ~0.7ms per archive, so on a large
-# archives a single call spends ~105s building JSON that the caller then throws
+# database here. get_archive_json_multi costs a fixed amount per archive, so on a large
+# library a single call spends ~105s building JSON that the caller then throws
 # away -- /api/archives and the category page both do this on every request.
 # Slicing the ID list BEFORE calling get_archive_json_multi keeps the cost
 # proportional to the page actually requested (100 archives -> ~0.07s).

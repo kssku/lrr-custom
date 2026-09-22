@@ -206,7 +206,8 @@ sub startup {
     # Rebuild stat hashes
     # /!\ Enqueuing tasks must be done either before starting the worker, or once the IOLoop is started!
     # Anything else can cause weird database lockups.
-    # DISABLED 2026-09-21: 大库上每次重启全量重建索引耗时很长且会循环重跑，改为手动触发
+    # DISABLED (fork): on a large library this rebuilds every index on each start and can re-run
+    # in a loop, so it is left to a manual trigger instead.
     # (manual trigger: perl -MLANraragi::Utils::Minion -e '...' 或 script/migrate_arcids.pl)
     # $self->minion->enqueue('build_stat_hashes');
 
@@ -216,7 +217,7 @@ sub startup {
     # Start File Watcher
     # CUSTOM FORK (feature/path-hash-id): upstream starts Shinobu unconditionally, but it
     # walks the whole content dir on every start. On a remote FUSE mount that walk can
-    # and can wedge the process in D state under throttling. This restores the
+    # wedge the process in D state under throttling, so this restores the
     # LRR_DISABLE_SHINOBU=1 switch that the pre-dev container image carried.
     if ( !$ENV{LRR_DISABLE_SHINOBU} ) {
         if ( IS_UNIX ) {

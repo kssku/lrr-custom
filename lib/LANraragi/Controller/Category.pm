@@ -24,8 +24,8 @@ sub index {
 
     # CUSTOM FORK (feature/path-hash-id): 不再在服务端预渲染全部归档。
     #
-    # 上游这里调用 generate_archive_list() 拿全量归档再拼 <li>。在 15 万归档的
-    # 库上，这一句要 118s+，直接撞 Mojolicious prefork 的 50 秒心跳红线
+    # 上游这里调用 generate_archive_list() 拿全量归档再拼 <li>。在十万级归档的
+    # 库上，这一句耗时可达分钟级，直接撞 Mojolicious prefork 的 50 秒心跳红线
     # （日志里 "has no heartbeat (50 seconds), restarting" 就是这么来的），
     # 而且生成的 HTML 有十几 MB，浏览器也会卡死。
     #
