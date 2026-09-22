@@ -206,7 +206,9 @@ sub startup {
     # Rebuild stat hashes
     # /!\ Enqueuing tasks must be done either before starting the worker, or once the IOLoop is started!
     # Anything else can cause weird database lockups.
-    $self->minion->enqueue('build_stat_hashes');
+    # DISABLED 2026-09-21: 大库上每次重启全量重建索引耗时很长且会循环重跑，改为手动触发
+    # (manual trigger: perl -MLANraragi::Utils::Minion -e '...' 或 script/migrate_arcids.pl)
+    # $self->minion->enqueue('build_stat_hashes');
 
     # Start a Minion worker in a subprocess
     start_minion($self);
