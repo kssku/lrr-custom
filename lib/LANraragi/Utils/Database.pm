@@ -13,6 +13,7 @@ use Encode;
 use File::Basename;
 use Redis;
 use Cwd;
+use File::Spec;
 use Unicode::Normalize;
 use List::Util      qw(max);
 use List::MoreUtils qw(uniq);
@@ -624,13 +625,38 @@ sub update_indexes ( $id, $oldtags, $newtags ) {
 # The path is UTF-8 encoded before hashing so non-ASCII filenames hash consistently.
 sub compute_id ($file) {
 
-    # Compute a SHA-1 hash of the file PATH (not its contents).
+    # CUSTOM FORK (feature/rel-path-hash): hash the path RELATIVE to the content dir,
+    # not the absolute container path.
+    #
+    # Was: SHA1("/<install-root>/content/<source>/<shard>/<id>.cbz")
+    #   -> ID depended on the image install path, so any
+    #      upstream image layout change (or moving the library between hosts/mounts) invalidated every ID.
+    # Now: SHA1("<source>/<shard>/<id>.cbz")
+    #   -> ID depends only on the path under the content root, identical across
+    #      hosts and mount points. Safe to move the library between machines.
+    #
+    # The source directory name stays in the hash, so the same item appearing
+    # under two different sources cannot collide.
+    #
+    # get_userdir() is the authoritative content root (it honours LRR_DATA_DIRECTORY
+    # and falls back to the "dirname" redis config, default "./content").
+    #
+    # KNOWN FRAGILITY: some sources shard their directories by numeric range
+    # ("<lo>-<hi>") or by year ("<yyyy>"), and those segment names are pure
+    # functions of the item id produced by the ingestion tooling. If that tooling
+    # changes its sharding range or year rule, every ID changes again.
+    #
+    # The relative path is UTF-8 encoded before hashing so non-ASCII filenames hash
+    # consistently.
+    my $root = LANraragi::Model::Config::get_userdir();
+    my $rel  = File::Spec->abs2rel( $file, $root );
+
+    # Compute a SHA-1 hash of the relative file PATH (not its contents).
     my $ctx = Digest::SHA->new(1);
-    $ctx->add( Encode::encode( 'utf8', $file ) );
+    $ctx->add( Encode::encode( 'utf8', $rel ) );
     my $digest = $ctx->hexdigest;
 
     return $digest;
-
 }
 
 # Bust the current search cache key in Redis.
