@@ -11,21 +11,27 @@
 我有一台自建的漫画库：**十万级归档**（cbz），全部放在**网盘**上，
 通过第三方挂载工具映射为 FUSE 目录给容器只读访问。
 
-直接跑官方版会撞上四个致命问题 —— 它们都源于同一个前提：
+直接跑官方版会撞上五个致命问题 —— 它们都源于同一个前提：
 **官方假设「库在本地磁盘、规模几千本」**，而我的场景是「远程 FUSE、十万级」。
 
 | 官方假设 | 我的现实 | 后果 |
 |---|---|---|
 | `compute_id` 读文件内容算 SHA-1 | FUSE 上每个文件读 512KB ≈ **数百毫秒** | 全库扫描要**几十小时** |
 | `KEYS` 全库扫描可接受 | 十万级 ID 键 / 数十万索引键 | 单次请求**数秒到数十秒**，worker 被判死重启 |
-| Shinobu 文件监听可用 | FUSE 遍历直接卡死 | 服务不可用 |
+| Shinobu 文件监听可用 | 原版扫描会读文件内容 | 在 FUSE 上遍历直接卡死 |
 | ID 用镜像内绝对路径哈希 | 换机器/换挂载点 | **全库 ID 失效** |
+| 每个新归档入库时生成缩略图 | FUSE 上两次读文件 | 增量入库被拖死 |
 
 **这个 fork 的目标：把 LANraragi 改造成「超大库 + FUSE 存储」也能流畅跑。**
 
+> **2026-09 更新**：Shinobu 已从「读内容的重量级扫描」改造为
+> **纯路径扫描 + 作用域监听**，FUSE 上可正常启用。全库（15 万文件）
+> 首次扫描实测 **约 54 秒**，之后完全依赖 inotify 增量。
+> 见下方「思路 5」。
+
 ---
 
-## 我改了什么（四个核心思路）
+## 我改了什么（五个核心思路）
 
 ### 思路 1：ID 计算不读文件内容
 
@@ -67,6 +73,33 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 
 **逃生开关**：`LRR_SEARCHCACHE_HARD_INVALIDATE=1` 恢复上游行为。
 
+### 思路 5：Shinobu 改成「纯路径扫描 + 作用域监听」
+
+上游 Shinobu 在入库时会 **读文件内容**（算页数、生成缩略图）——
+在 FUSE 上每个文件两次读取，这正是它卡死的根因。
+
+本 fork 把整条入库路径改为**零文件读取**：
+
+- 扫描只走 `readdir` + 路径哈希，**不打开任何归档**
+- 缩略图改为**懒生成**（首次在阅读器打开时才做）
+- 新增 `LRR_THUMBNAIL_MODE=lazy`（默认）／`auto`（上游行为）
+
+**新增 `LRR_SHINOBU_WATCH_DIRS` —— 作用域监听**：
+
+- **冒号分隔**，可绝对路径也可相对 `content/` 根
+- 不设 = watcher 启动但**空转**（安全默认）
+- 传 `content/` 本身会被拒绝（避免退化成全库扫描）
+- 例：`wnacg/350001-400000:wnacg/_no_id`
+
+**实测（15 万文件 / 9 个分片）**：
+
+| 项 | 结果 |
+|---|---|
+| 全库首次扫描 | **约 54 秒**（纯目录遍历，不碰归档）|
+| 之后增量 | **全靠 inotify**，零额外成本 |
+| 新文件入库 | 写入后 **~2 秒**自动入库 |
+| 删除 | 清 filemap、**保留 db0 孤儿**（上游行为）|
+
 ---
 
 ## 效果
@@ -74,6 +107,8 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 | 场景 | 官方上游 | 本 fork |
 |---|---|---|
 | 全库 ID 计算 | 数十小时（FUSE 读内容）| **分钟级**（只哈希路径）|
+| 全库扫描（Shinobu）| 卡死 / 数小时 | **约 54 秒**（纯路径）|
+| 增量入库 | 不支持（已禁用）| **inotify 实时，~2 秒** |
 | `/api/archives?start=0` | 秒级 | **亚秒级** |
 | `/api/archives`（省略 start）| **数十秒**（worker 被判死）| **亚秒级** |
 | 分类页渲染 | **分钟级 / 十几 MB** | 前端分页，**秒级** |
@@ -94,28 +129,47 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 
 ## 部署要点（与官方不同的地方）
 
-**镜像**：不是官方 `difegue/lanraragi`，而是自建镜像。
+**镜像**：不是官方 `difegue/lanraragi`，而是自建镜像（`lrr-custom:v3`，基于
+`tools/build/docker/Dockerfile`）。
 
 **关键环境变量**：
 
 | 变量 | 值 | 作用 |
 |---|---|---|
-| `LRR_DISABLE_SHINOBU` | `1` | **禁用文件监听**（FUSE 上会卡死）|
+| `LRR_DISABLE_SHINOBU` | **`0`** | **启用文件监听**（路径扫描已修好，FUSE 上可用）|
+| `LRR_SHINOBU_WATCH_DIRS` | `<分片列表>` | **作用域监听**，冒号分隔；不设 = 空转 |
+| `LRR_THUMBNAIL_MODE` | `lazy` | **懒生成缩略图**，首次打开才做（`auto` = 上游行为）|
 | `LRR_CONTENT_DIR` | `<content 根目录>` | 内容根目录 |
 
 **网盘挂载**（只读）：
 
 ```yaml
-- <宿主 FUSE 路径>:<容器 content 子目录>:ro,rshared
+- <宿主 FUSE 路径>:<容器 content 子目录>:ro
 ```
 
-**override 补丁机制**（因为镜像代码烤死、无 Dockerfile）：
+> ⚠️ **不要加 `rshared`。** 它加在 FUSE 挂载点上会让内核递归传播挂载事件，
+> 容器删除时 umount 永久阻塞 → 容器卡在 `Removal In Progress` → 只能重启 dockerd。
+> 详见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) 与知识库条目 `2026-09-23-dell-docker-rshared-mount-explosion`。
+
+> ⚠️ 若容器报 cgroup 相关错误（`sysvinit + elogind` 撞 cgroup namespace），
+> 加 `cgroup: host`。
+
+**override 补丁机制**（v3 起已不再需要 —— 修复已进镜像，仅作历史参考）：
 
 ```yaml
 - <宿主 override 路径>/Utils/Database.pm:<容器 lib 路径>/Utils/Database.pm:ro
 ```
 
 > 详细部署配置见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) 的「(B) 部署层面的改动」。
+
+**重建镜像**（v3 已可用）：
+
+```bash
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
+```
+
+> v2 的 `perl5` 属主坑已在 `99c08815` 于 Dockerfile 内预建目录修根，
+> 不再需要构建后补 `chown`。
 
 ---
 
@@ -129,8 +183,13 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 - `lib/LANraragi/Model/Archive.pm` ← 分页下推
 - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
 - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
+- `lib/LANraragi/Model/Shinobu.pm` ← **纯路径扫描 + `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复**
+- `lib/LANraragi/Model/Plugins.pm` ← **缩略图懒生成守卫**
+- `tools/build/docker/Dockerfile` ← **预建 `perl5` 目录（属主 koyomi）**
 
 **特别是 `compute_id`** —— 如果上游改动覆盖了它，全库 ID 会全部失效。
+
+**特别是 `Shinobu.pm`** —— 上游若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
 
 ---
 
