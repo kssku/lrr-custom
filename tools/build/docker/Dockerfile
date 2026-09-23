@@ -100,6 +100,11 @@ RUN perl ./tools/install.pl install-front && rm -rf public/js/vendor/*.map publi
 
 FROM base AS runtime
 
+# CUSTOM FORK: the COPY at line 110 only brings in perl5/lib, so Docker creates
+# the intermediate /home/koyomi/perl5 as root:root. local::lib (running as uid
+# 9001) then fails to create perl5/bin at boot. Pre-create it owned by koyomi.
+RUN mkdir -p /home/koyomi/perl5 && chown koyomi:koyomi /home/koyomi/perl5
+
 # Copy s6-overlay 3.x services
 # Uses a system-d like definition that can't be use in 2.x
 COPY /tools/build/docker/s6/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
