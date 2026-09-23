@@ -14,11 +14,9 @@ use File::Temp qw(tempdir tmpnam);
 use File::Find qw(find);
 
 use LANraragi::Utils::Archive  qw(extract_thumbnail);
-use LANraragi::Utils::Database qw(invalidate_cache compute_id set_title set_summary add_archive_to_redis add_timestamp_tag add_pagecount add_arcsize);
+use LANraragi::Utils::Database qw(invalidate_cache compute_id set_title set_summary set_tags add_archive_to_redis add_timestamp_tag add_pagecount add_arcsize);
 use LANraragi::Utils::Logging  qw(get_logger);
-use LANraragi::Utils::Redis    qw(redis_encode);
 use LANraragi::Utils::Generic  qw(is_archive get_bytelength);
-use LANraragi::Utils::String   qw(trim trim_CRLF trim_url);
 use LANraragi::Utils::Path     qw(create_path get_archive_path rename_path move_path unlink_path);
 
 use LANraragi::Model::Config;
@@ -112,31 +110,23 @@ sub handle_incoming_file ( $tempfile, $catid, $tags, $title, $summary ) {
 
     # Add the file to the database ourselves so Shinobu doesn't do it
     # This allows autoplugin to be ran ASAP.
-    my $name = add_archive_to_redis( $id, (IS_UNIX ? encode_utf8( $output_file ) : $output_file), $redis, $redis_search );
+    # CUSTOM FORK (feature/path-only-shinobu): $want_size=1 -- the file was just
+    # written locally, so the -s stat is cheap here. The Shinobu/ingest path
+    # deliberately leaves it off to avoid a FUSE stat per file.
+    my $name = add_archive_to_redis( $id, (IS_UNIX ? encode_utf8( $output_file ) : $output_file), $redis, $redis_search, 1 );
 
     # If additional tags were given to the sub, add them now.
+    #
+    # CUSTOM FORK (feature/path-only-shinobu): upstream wrote the tags with a raw
+    # `hset` and then hand-patched LRR_URLMAP for source: tags. That bypassed
+    # update_indexes() entirely, so upload-time tags never reached INDEX_* or
+    # LRR_STATS, and the archive was never removed from LRR_UNTAGGED -- an
+    # archive uploaded WITH tags was still counted as untagged and could not be
+    # found by search. set_tags() is the canonical path: it normalises/encodes
+    # the tags, calls update_indexes() (INDEX_*/LRR_STATS/LRR_URLMAP/
+    # LRR_UNTAGGED), and invalidates the search cache.
     if ($tags) {
-        $redis->hset( $id, "tags", redis_encode($tags) );
-
-        # Check for a source: tag, and if it exists amend the urlmap by hand.
-        # This is faster than queueing a full recalculation job.
-        my @tags = split( /,\s?/, $tags );
-
-        foreach my $t (@tags) {
-            $t = trim($t);
-            $t = trim_CRLF($t);
-
-            # If the tag is a source: tag, add it to the URL index
-            if ( $t =~ /source:(.*)/i ) {
-                my $url = $1;
-                $logger->debug("Adding $url as an URL for $id");
-                trim_url($url);
-                $logger->debug("Trimmed: $url");
-
-                # No need to encode the value, as URLs are already encoded by design
-                $redis_search->hset( "LRR_URLMAP", $url, $id );
-            }
-        }
+        set_tags( $id, $tags );
     }
 
     # Set title

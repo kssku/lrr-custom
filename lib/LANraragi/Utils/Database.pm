@@ -37,7 +37,7 @@ our @EXPORT_OK = qw(
 
 # Creates a DB entry for a file path with the given ID.
 # This function doesn't actually require the file to exist at its given location.
-sub add_archive_to_redis ( $id, $file, $redis, $redis_search ) {
+sub add_archive_to_redis ( $id, $file, $redis, $redis_search, $want_size = 0 ) {
 
     my $logger = get_logger( "Archive", "lanraragi" );
     my ( $name, $path, $suffix ) = fileparse( $file, qr/\.[^.]*/ );
@@ -51,7 +51,12 @@ sub add_archive_to_redis ( $id, $file, $redis, $redis_search ) {
     $redis->hset( $id, "tags",    "" );
     $redis->hset( $id, "summary", "" );
 
-    if ( defined($file) && -e $file ) {
+    # CUSTOM FORK (feature/path-only-shinobu): the upstream `-e`/`-s` pair is a
+    # stat on the archive body, which costs ~12.8s per file on the CD2 FUSE mount.
+    # Callers that already have the file locally (Upload.pm) pass $want_size=1 to
+    # keep the size; the Shinobu/ingest path leaves it off and the size is filled
+    # in lazily by add_arcsize() the first time it is actually needed.
+    if ( $want_size && defined($file) && -e $file ) {
         $redis->hset( $id, "arcsize", -s $file );
     }
 
