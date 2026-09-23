@@ -234,17 +234,36 @@ sub exec_metadata_plugin ( $plugin, $id, %args ) {
     ( $_ = redis_decode($_) ) for ( $name, $title, $tags );
 
     # If the thumbnail hash is empty or undefined, we'll generate it here.
+    #
+    # CUSTOM FORK (feature/path-only-shinobu): generating the thumbnail here opens
+    # the archive (get_filelist + extract_single_file = two FUSE reads). That runs
+    # on *every* ingest, because a freshly added archive has no thumbhash yet, and
+    # the whole point of this fork is that nothing but the reader may touch the
+    # remote mount. So it is gated behind LRR_THUMBNAIL_MODE:
+    #
+    #   lazy (default) - leave thumbhash empty; the plugin still runs, and the web
+    #                    UI falls back to noThumb.png. The thumbnail is built the
+    #                    first time the archive is actually opened.
+    #   auto           - upstream behaviour: build it right here.
+    #
+    # An empty thumbhash is safe for plugins: thumbnail_hash is only ever used as
+    # an opaque cache key, never as a file path.
     unless ( length $thumbhash ) {
-        $logger->info("Thumbnail hash invalid, regenerating.");
-        my $thumbdir = LANraragi::Model::Config->get_thumbdir;
-        $thumbhash = "";
+        if ( ( $ENV{LRR_THUMBNAIL_MODE} // 'lazy' ) eq 'lazy' ) {
+            $logger->debug("Skipping thumbnail generation for $id (LRR_THUMBNAIL_MODE=lazy).");
+            $thumbhash = "";
+        } else {
+            $logger->info("Thumbnail hash invalid, regenerating.");
+            my $thumbdir = LANraragi::Model::Config->get_thumbdir;
+            $thumbhash = "";
 
-        try {
-            extract_thumbnail( $thumbdir, $id, 1, 1, 1 );
-            $thumbhash = $redis->hget( $id, "thumbhash" );
-            $thumbhash = redis_decode($thumbhash);
-        } catch ($e) {
-            $logger->warn("Error building thumbnail: $e");
+            try {
+                extract_thumbnail( $thumbdir, $id, 1, 1, 1 );
+                $thumbhash = $redis->hget( $id, "thumbhash" );
+                $thumbhash = redis_decode($thumbhash);
+            } catch ($e) {
+                $logger->warn("Error building thumbnail: $e");
+            }
         }
     }
     $redis->quit();

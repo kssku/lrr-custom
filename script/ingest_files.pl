@@ -56,6 +56,7 @@ use lib "$FindBin::Bin/../lib";
 
 use Getopt::Long qw(GetOptions);
 use Time::HiRes  qw(time);
+use File::Spec;
 
 # Loading Model::Config pulls in Mojo/Redis and resolves lrr.conf, which is what
 # gives us the content dir and both Redis handles. Shinobu already depends on it.
@@ -100,8 +101,10 @@ my $root    = create_path($userdir);
 
 my @dirs;
 for my $d (@args) {
-    my $abs = ( $d =~ m{^/} ) ? $d : create_path( $userdir, $d );
-    $abs = create_path($abs);
+    # create_path() is an identity function on Unix (it only wraps long paths on
+    # Windows), so joining is done with File::Spec, not create_path.
+    my $abs = ( $d =~ m{^/} ) ? $d : File::Spec->catfile( $userdir, $d );
+    $abs = File::Spec->canonpath($abs);
 
     if ( $abs eq $root ) {
         die "refusing to scan the content root ($root) -- name the subdirectory that received new files\n";
