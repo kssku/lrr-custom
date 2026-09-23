@@ -27,6 +27,7 @@ BEGIN { unshift @INC, "$FindBin::Bin/../lib"; }
 use Mojolicious;    # Needed by Model::Config to read the Redis address/port.
 use File::ChangeNotify;
 use File::Basename;
+use File::Spec;
 use Encode;
 
 # CUSTOM FORK (feature/path-only-shinobu): extract_thumbnail is deliberately NOT
@@ -175,7 +176,7 @@ sub get_watch_dirs {
     my $userdir = LANraragi::Model::Config->get_userdir;
 
     # Relative entries are resolved against the content folder.
-    @dirs = map { m{^/} ? $_ : create_path( $userdir, $_ ) } @dirs;
+    @dirs = map { m{^/} ? $_ : File::Spec->catdir( $userdir, $_ ) } @dirs;
 
     # Never watch the whole content root: that is the exact case we are avoiding.
     my $root = create_path($userdir);
