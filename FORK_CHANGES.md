@@ -1,7 +1,11 @@
 # lrr-custom —— 相对官方上游做了什么
 
-> 本文档记录本 fork 相对 [Difegue/LANraragi](https://github.com/Difegue/LANraragi) 官方上游的**全部改动**。
+> 📖 **先读 [`PROJECT.md`](PROJECT.md)** —— 那是本 fork 的唯一权威项目总纲（架构 / 数据流 / 部署 / 运维 / 待办）。
+> 本文档是 PROJECT.md §5「核心改造点」的展开细节，专注回答「**相对官方上游改了什么**」。
+>
 > 分两部分：**(A) 已提交到 Git 的代码改动**、**(B) 部署层面的配置与运维改动**。
+>
+> ⚠️ 改动代码时，**本文档与 `PROJECT.md` 必须同步更新**（见 `PROJECT.md` §11）。
 
 ---
 

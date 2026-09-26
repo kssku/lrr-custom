@@ -4,6 +4,17 @@
 > 面向「**超大归档库 + 网盘 FUSE 远程存储**」场景做了深度性能改造。
 > 上游原始内容（徽章、截图、特性列表）保留在下方。
 
+## 📖 项目文档导航
+
+| 文档 | 内容 |
+|---|---|
+| **[`PROJECT.md`](PROJECT.md)** | **唯一权威总纲** —— 架构 / 数据流 / 部署 / 运维 / 性能基线 / 技术债 / 待办 |
+| [`FORK_CHANGES.md`](FORK_CHANGES.md) | 相对官方上游的**全部改动**（PROJECT.md §5 的展开细节） |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 开发约定 —— **含「改代码必须同步改文档」硬性规则** |
+
+> ⚠️ 改任何东西之前先读 `PROJECT.md`。它建立了几个反直觉的实测结论
+> （如 FUSE 上 `stat` 比 `readdir` 慢 337 倍），是理解本 fork 全部设计的前提。
+
 ---
 
 ## 我为什么做这个 fork
@@ -139,7 +150,7 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 | `LRR_DISABLE_SHINOBU` | **`0`** | **启用文件监听**（路径扫描已修好，FUSE 上可用）|
 | `LRR_SHINOBU_WATCH_DIRS` | `<分片列表>` | **作用域监听**，冒号分隔；不设 = 空转 |
 | `LRR_THUMBNAIL_MODE` | `lazy` | **懒生成缩略图**，首次打开才做（`auto` = 上游行为）|
-| `LRR_CONTENT_DIR` | `<content 根目录>` | 内容根目录 |
+| `LRR_DATA_DIRECTORY` | `<content 根目录>` | 内容根目录（**不是** `LRR_CONTENT_DIR`，后者在代码中不存在）|
 
 **网盘挂载**（只读）：
 
@@ -183,7 +194,8 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 - `lib/LANraragi/Model/Archive.pm` ← 分页下推
 - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
 - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
-- `lib/LANraragi/Model/Shinobu.pm` ← **纯路径扫描 + `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复**
+- `lib/Shinobu.pm` ← **纯路径扫描 + `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复**
+  （注意：不在 `lib/LANraragi/Model/` 下，Shinobu 位于 `lib/` 顶层）
 - `lib/LANraragi/Model/Plugins.pm` ← **缩略图懒生成守卫**
 - `tools/build/docker/Dockerfile` ← **预建 `perl5` 目录（属主 koyomi）**
 
