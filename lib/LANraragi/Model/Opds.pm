@@ -96,7 +96,21 @@ sub get_opds_data {
     my $redis = LANraragi::Model::Config->get_redis;
 
     my $file = get_archive_path( $redis, $id );
-    unless ( -e $file ) { return; }
+
+    # CUSTOM FORK (feature/path-hash-id): upstream does a `-e $file` here, which is
+    # a stat on the archive body. On the CD2 FUSE mount that costs ~1.65ms per file
+    # (and ~12.8s on a cold cache), and generate_opds_catalog calls this once per
+    # archive in the page -- so an OPDS client browsing the catalog pays a stat
+    # round-trip per entry.
+    #
+    # The DB entry is the real source of truth for "does this archive exist":
+    # clean_database() removes entries whose file is gone, and get_archive_json
+    # returns undef for an unknown ID. So drop the stat and let the JSON lookup
+    # below do the existence check. Set LRR_STRICT_FILE_CHECK=1 to restore the
+    # upstream stat when debugging a desynced DB.
+    if ( $ENV{LRR_STRICT_FILE_CHECK} ) {
+        unless ( -e $file ) { return; }
+    }
 
     my $arcdata = get_archive_json( $redis, $id );
     unless ($arcdata) { return; }

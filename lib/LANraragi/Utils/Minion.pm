@@ -17,6 +17,7 @@ use LANraragi::Utils::Generic    qw(exec_with_lock_pure);
 use LANraragi::Utils::Logging    qw(get_logger);
 use LANraragi::Utils::Redis      qw(redis_decode);
 use LANraragi::Utils::Archive    qw(extract_thumbnail);
+use LANraragi::Utils::Database   qw(get_all_archive_ids);
 use LANraragi::Utils::Plugins    qw(get_downloader_for_url get_plugin get_plugin_parameters use_plugin);
 use LANraragi::Utils::String     qw(trim_url);
 use LANraragi::Utils::TempFolder qw(get_temp);
@@ -186,7 +187,10 @@ sub add_tasks {
 
             my $logger = get_logger( "Minion", "minion" );
             my $redis  = LANraragi::Model::Config->get_redis;
-            my @keys   = $redis->keys('????????????????????????????????????????');
+
+            # CUSTOM FORK (feature/path-hash-id): read the ID list from the
+            # arcids_idx zset instead of a full db0 keyspace scan.
+            my @keys = get_all_archive_ids($redis);
             $redis->quit();
 
             $logger->info("Starting thumbnail regen job (force = $force)");
@@ -284,7 +288,10 @@ sub add_tasks {
 
             my $logger = get_logger( "Minion", "minion" );
             my $redis  = LANraragi::Model::Config->get_redis;
-            my @keys   = $redis->keys('????????????????????????????????????????');
+
+            # CUSTOM FORK (feature/path-hash-id): read the ID list from the
+            # arcids_idx zset instead of a full db0 keyspace scan.
+            my @keys = get_all_archive_ids($redis);
 
             $logger->info("Starting find duplicate job (threshold = $threshold)");
 

@@ -185,7 +185,7 @@ my $root = LANraragi::Model::Config::get_userdir();
 | `LRR_SHINOBU_WATCH_DIRS` | 空 | **作用域监听**，冒号分隔；不设 = watcher 空转 | `lib/Shinobu.pm` |
 | `LRR_THUMBNAIL_MODE` | `lazy` | `lazy` 懒生成 / `auto` 上游行为 | `Model/Plugins.pm` |
 | `LRR_SEARCHCACHE_HARD_INVALIDATE` | 空 | 设 `1` 恢复上游硬失效 | `Utils/Database.pm` |
-| `LRR_STRICT_FILE_CHECK` | 空 | 设 `1` 恢复逐文件 `-e` 存在性检查 | `Utils/Database.pm` |
+| `LRR_STRICT_FILE_CHECK` | 空 | 设 `1` 恢复逐文件 `-e` 存在性检查 | `Utils/Database.pm`、`Model/Opds.pm` |
 
 **`LRR_SHINOBU_WATCH_DIRS` 细则**：
 - 冒号分隔，可绝对路径也可相对内容根
@@ -363,13 +363,41 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 
 **已改造（C 级）**：`Model/Search.pm:168`、`Model/Search.pm:326`、`Model/Search.pm:44`。
 
-### 9.2 唯一的逐条 `stat` 残留
+**已改造（A 级，2026-09-26）**：9 处全部收敛到 `Utils/Database.pm::get_all_archive_ids()`。
 
-`Model/Opds.pm:99` 仍有 `-e $file`。
-OPDS 客户端拉目录时会对每个条目 `stat`，在 FUSE 上会卡（参见 §6.3 的 1.65 ms/条）。
-**尚未改造。**
+该函数优先 `ZRANGE arcids_idx 0 -1`（O(N)，单次往返），仅在
+`arcids_idx` 缺失（老库尚未跑 `migrate_arcids.pl`）时回退到 `KEYS` 并打 WARN。
+调用方因此**在已填充的库上永远不会拿到空列表**。
 
-### 9.3 待清理文件（需确认后删除）
+| 文件:行 | 函数 | 原用途 |
+|---|---|---|
+| `Model/Stats.pm:56` | `build_stat_hashes` | 只要数量（`scalar @keys`），统计页 / Prometheus 热路径 |
+| `Model/Stats.pm:264` | `compute_content_size` | 遍历算总大小 |
+| `Controller/Api/Database.pm:194` | `clear_new_all` | 标记全部已读 |
+| `Model/Archive.pm:97` | `get_archive_ids` | **保留**：本身即 `arcids_idx` 的降级分支 |
+| `Model/Backup.pm:132` | `build_backup_JSON` | 备份全部归档 |
+| `Plugin/Scripts/nHentaiSourceConverter.pm:34` | `run_script` | 批量改写 source 标签 |
+| `Utils/Minion.pm:189` | `regen_all_thumbnails` | 缩略图重建 |
+| `Utils/Minion.pm:287` | `find_duplicates` | 查重 |
+| `Utils/Database.pm:441` | `clean_database` | 清理库（**每次扫描后必跑**） |
+
+`Utils/Database.pm:69` 是 `get_all_archive_ids` 内部的 `KEYS` 兜底，属**预期保留**。
+全仓 `KEYS` 40 字符扫描点现仅剩 2 处，均为刻意保留的降级分支。
+
+### 9.2 逐条 `stat` 残留
+
+`Model/Opds.pm:99` 的 `-e $file` **已改造（2026-09-26）**：
+改为受 `LRR_STRICT_FILE_CHECK` 门控，默认跳过。
+理由：DB 条目才是「归档是否存在」的事实来源 ——
+`clean_database()` 会摘掉文件已消失的条目，`get_archive_json` 对未知 ID 返回 undef，
+存在性检查实际是冗余的；而在 FUSE 上每条 1.65 ms（冷缓存 12.8 s），
+OPDS 目录每页每项都要付一次。
+
+其余 `-e` 保留点（`Model/Archive.pm` 缩略图、`Controller/Plugins.pm` 插件目录、
+`Model/Tankoubon.pm` 缩略图、`Utils/Registry.pm` 插件文件等）**均非归档热路径**，不构成瓶颈。
+`Utils/Database.pm:462`（`clean_database` 内）**必须** stat —— 那正是它的职责。
+
+### 9.3 已清理文件（2026-09-26 删除）
 
 | 文件 | 理由 |
 |---|---|

@@ -16,7 +16,7 @@ use LANraragi::Utils::Generic  qw(is_archive intersect_arrays);
 use LANraragi::Utils::String   qw(trim trim_CRLF trim_url);
 use LANraragi::Utils::Redis    qw(redis_decode redis_encode);
 use LANraragi::Utils::Logging  qw(get_logger);
-use LANraragi::Utils::Database qw(get_arcsize);
+use LANraragi::Utils::Database qw(get_arcsize get_all_archive_ids);
 
 sub get_archive_count {
     my $redis = LANraragi::Model::Config->get_redis_search;
@@ -52,8 +52,12 @@ sub build_stat_hashes {
     my $redistx = LANraragi::Model::Config->get_redis_search;
     my $logger  = get_logger( "Tag Stats", "lanraragi" );
 
-    # 40-character long keys only => Archive IDs
-    my @keys          = $redis->keys('????????????????????????????????????????');
+    # CUSTOM FORK (feature/path-hash-id): upstream enumerates db0 with a raw
+    # KEYS pattern here just to count archives (~2s of blocked Redis on a 160k
+    # library), on the hot path of every stats rebuild. get_all_archive_ids
+    # reads the arcids_idx zset instead and only falls back to KEYS when it is
+    # missing.
+    my @keys          = get_all_archive_ids($redis);
     my $archive_count = scalar @keys;
     my ( $total, $filtered, @tanks ) = LANraragi::Model::Tankoubon::get_tankoubon_list(-1);
 
@@ -257,7 +261,8 @@ sub build_tag_stats {
 sub compute_content_size {
     my $redis_db = LANraragi::Model::Config->get_redis;
 
-    my @keys = $redis_db->keys('????????????????????????????????????????');
+    # CUSTOM FORK (feature/path-hash-id): same KEYS-to-zset swap as above.
+    my @keys = get_all_archive_ids($redis_db);
 
     $redis_db->multi;
     foreach my $id (@keys) {

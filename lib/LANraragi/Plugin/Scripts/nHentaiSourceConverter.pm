@@ -5,7 +5,7 @@ use warnings;
 no warnings 'uninitialized';
 
 use LANraragi::Utils::Logging qw(get_plugin_logger);
-use LANraragi::Utils::Database qw(invalidate_cache set_tags);
+use LANraragi::Utils::Database qw(invalidate_cache set_tags get_all_archive_ids);
 use LANraragi::Model::Config;
 
 #Meta-information about your plugin.
@@ -31,7 +31,9 @@ sub run_script {
     my $logger = get_plugin_logger();
     my $redis  = LANraragi::Model::Config->get_redis;
 
-    my @keys = $redis->keys('????????????????????????????????????????');    #40-character long keys only => Archive IDs
+    # CUSTOM FORK (feature/path-hash-id): read the ID list from arcids_idx instead of
+    # a full `KEYS` scan of db0 (see get_all_archive_ids).
+    my @keys = get_all_archive_ids($redis);
 
     my $count = 0;
 

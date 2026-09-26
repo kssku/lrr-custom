@@ -8,7 +8,7 @@ use File::Temp qw(tempfile);
 use LANraragi::Model::Backup;
 use LANraragi::Model::Stats;
 use LANraragi::Utils::Generic    qw(render_api_response);
-use LANraragi::Utils::Database   qw(invalidate_cache);
+use LANraragi::Utils::Database   qw(invalidate_cache get_all_archive_ids);
 use LANraragi::Utils::TempFolder qw(get_temp);
 
 sub serve_backup {
@@ -190,8 +190,9 @@ sub clear_new_all {
     my $redis_search = $self->LRR_CONF->get_redis_search;
 
     # Get all archives thru redis
-    # 40-character long keys only => Archive IDs
-    my @keys = $redis->keys('????????????????????????????????????????');
+    # CUSTOM FORK (feature/path-hash-id): read the arcids_idx zset instead of
+    # running a raw KEYS scan over db0 (~2s blocked on a 160k library).
+    my @keys = get_all_archive_ids($redis);
 
     foreach my $idall (@keys) {
         $redis->hset( $idall, "isnew", "false" );

@@ -32,8 +32,42 @@ use Exporter 'import';
 our @EXPORT_OK = qw(
   invalidate_cache compute_id change_archive_id set_tags set_title set_summary set_isnew get_computed_tagrules save_computed_tagrules get_tankoubons_by_file update_indexes
   get_archive get_archive_json get_archive_json_multi get_tags get_arcsize add_arcsize add_pagecount add_timestamp_tag add_archive_to_redis
+  get_all_archive_ids
   redis_decode redis_encode
 );
+
+# Returns the list of every archive ID in the database.
+#
+# CUSTOM FORK (feature/path-hash-id): upstream spells this as a raw
+# `KEYS ????????????????????????????????????????` on db0. On a 160k-archive
+# library that is a full keyspace scan (~2s of blocked Redis, plus several MB
+# of response to deserialize) and it is on the hot path of the stats page,
+# the Prometheus endpoint, the "mark all as read" action, backups and
+# clean_database -- clean_database in particular runs right after every scan.
+#
+# The same ID set is already maintained as arcids_idx (see add_archive_to_redis,
+# change_archive_id and delete_archive), so read it from there in O(N) time with
+# a single ZRANGE instead of a keyspace scan.
+#
+# If the zset is missing -- a fork upgrade on an existing DB before
+# migrate_arcids.pl has run -- fall back to the upstream KEYS so every caller
+# keeps working. Callers therefore never see an empty list on a populated DB.
+sub get_all_archive_ids ($redis = undef) {
+
+    $redis = LANraragi::Model::Config->get_redis unless defined $redis;
+
+    if ( $redis->exists('arcids_idx') ) {
+        return $redis->zrange( 'arcids_idx', 0, -1 );
+    }
+
+    my $logger = get_logger( "Archive", "lanraragi" );
+    $logger->warn(
+        "arcids_idx is missing; falling back to a full KEYS scan. " .
+        "Run script/migrate_arcids.pl to restore the paging index."
+    );
+
+    return $redis->keys('????????????????????????????????????????');
+}
 
 # Creates a DB entry for a file path with the given ID.
 # This function doesn't actually require the file to exist at its given location.
@@ -403,8 +437,11 @@ sub clean_database {
     my @filemapids = $redis_config->exists("LRR_FILEMAP") ? $redis_config->hvals("LRR_FILEMAP") : ();
     my %filemap    = map { $_ => 1 } @filemapids;
 
-    #40-character long keys only => Archive IDs
-    my @keys = $redis->keys('????????????????????????????????????????');
+    # CUSTOM FORK (feature/path-hash-id): read the ID list from the arcids_idx
+    # zset instead of a full db0 keyspace scan. clean_database runs right after
+    # every scan, so this KEYS was the single most-hit keyspace scan on a large
+    # library (~2s of blocked Redis at 160k archives).
+    my @keys = get_all_archive_ids($redis);
 
     my $deleted_arcs  = 0;
     my $unlinked_arcs = 0;

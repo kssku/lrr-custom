@@ -10,7 +10,7 @@ use Mojo::JSON qw(decode_json encode_json);
 use LANraragi::Model::Category;
 use LANraragi::Model::Tankoubon;
 use LANraragi::Utils::String   qw(trim_CRLF);
-use LANraragi::Utils::Database qw(invalidate_cache set_title set_tags set_summary);
+use LANraragi::Utils::Database qw(invalidate_cache set_title set_tags set_summary get_all_archive_ids);
 use LANraragi::Utils::Logging  qw(get_logger);
 use LANraragi::Utils::Redis    qw(redis_decode redis_encode);
 
@@ -129,7 +129,9 @@ sub build_backup_JSON {
     }
 
     # Backup archives themselves next
-    my @keys       = $redis->keys('????????????????????????????????????????');    #40-character long keys only => Archive IDs
+    # CUSTOM FORK (feature/path-hash-id): read the ID list from arcids_idx instead of
+    # a full `KEYS` scan of db0 (see get_all_archive_ids).
+    my @keys       = get_all_archive_ids($redis);
     my $arc_count  = 0;
     my $total_arcs = scalar @keys;
 
