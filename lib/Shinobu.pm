@@ -42,7 +42,7 @@ use LANraragi::Utils::Redis      qw(redis_encode);
 # The upstream "wait until the file is openable" loop opened the file body, which
 # on a FUSE mount (CD2) stalls for ~12.8s per stat/open. Shinobu now only computes
 # the path hash and never touches the file body.
-use LANraragi::Utils::Path       qw(create_path find_path get_archive_path);
+use LANraragi::Utils::Path       qw(create_path get_archive_path);
 
 # CUSTOM FORK (feature/path-only-shinobu): the initial scan is driven through the
 # batched ingest engine instead of one unbounded update_filemap() walk. See the
@@ -239,6 +239,41 @@ sub get_watch_dirs {
     return @dirs;
 }
 
+# Recursively collect archive paths under $dir into @$out, without stat()ing
+# every entry.
+#
+# CUSTOM FORK (feature/path-only-shinobu). See the call site in
+# update_filemap() for the measurements that motivate this. The trick is that
+# is_archive() doubles as the file/directory discriminator: its regex anchors on
+# an archive extension, so it cannot match a directory name. Every entry is
+# therefore classified by a pure-regex test, and only the entries that are NOT
+# archives are stat()ed -- and even then only to decide whether to recurse.
+#
+# On the libraries this fork targets that means zero stats in the common case:
+# shards hold only flat archive files (measured: 1-50000 and pika/2020 contain
+# 26,417 and 15,245 entries, 100% of them .cbz and 0 subdirectories).
+sub _scan_archives ( $dir, $out ) {
+
+    opendir( my $dh, $dir ) or do {
+        $logger->warn("Could not open directory $dir: $!");
+        return;
+    };
+    my @entries = readdir $dh;
+    closedir $dh;
+
+    for my $name (@entries) {
+        next if $name eq '.' || $name eq '..';
+
+        my $path = File::Spec->catfile( $dir, $name );
+
+        if ( is_archive($name) ) {
+            push @$out, create_path($path);
+        } elsif ( -d $path ) {
+            _scan_archives( $path, $out );
+        }
+    }
+}
+
 # Update the filemap. This acts as a masterlist of what's in the content directory.
 # This computes IDs for all new archives and henceforth can get rather expensive!
 sub update_filemap (@roots) {
@@ -262,15 +297,27 @@ sub update_filemap (@roots) {
     foreach my $root (@roots) {
         $logger->info("Scanning $root");
 
-        find_path(
-            sub {
-                $_ = create_path($_);
-                return if -d $_;    #Directories are excluded on the spot
-                return unless is_archive($_);
-                push @files, $_;    #Push files to array
-            },
-            $root
-        );
+        # CUSTOM FORK (feature/path-only-shinobu): readdir-based walk instead of
+        # File::Find.
+        #
+        # File::Find runs a -d test on EVERY entry it visits (to tell files from
+        # directories before deciding to recurse). On a remote FUSE mount each
+        # such stat is a full round trip: measured on this NAS over the 26,417
+        # entries of shard 1-50000, File::Find did not finish in 50s inside the
+        # container, while this readdir walk returns the same 26,417 paths in
+        # 6.7s.
+        #
+        # The -d test is unnecessary here because is_archive() already decides
+        # the same question for free: its regex requires the name to END in a
+        # known archive extension, so it can never match a directory. A name
+        # that matches is a file to record; only a name that does NOT match is a
+        # candidate directory worth recursing into -- one stat per DIRECTORY,
+        # not one per entry.
+        #
+        # Symbolic links are not followed. The previous File::Find call did not
+        # set follow_fast either, and nothing in this fork relies on
+        # follow-through (IDs hash the path, never the target).
+        _scan_archives( $root, \@files );
     }
 
     # Cross-check with filemap to get recorded files that aren't on the FS, and new files that aren't recorded.
