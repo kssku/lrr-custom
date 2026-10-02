@@ -92,10 +92,22 @@ sub move_path ( $old_file, $new_file ) {
 
 sub find_path( $wanted, $path ) {
     if ( IS_UNIX ) {
+
+        # CUSTOM FORK (feature/path-only-shinobu): follow_fast is deliberately
+        # NOT set. It makes File::Find lstat every entry it visits (to detect
+        # symlinks and to populate its seen/duplicate bookkeeping). On a remote
+        # FUSE mount (CloudDrive2/CloudFS) those extra lstat calls are the
+        # dominant cost of a walk: measured on this NAS over the 26,418-entry
+        # shard 1-50000, `find` with follow_fast did not finish in 30s, while
+        # the same walk without it took 10.3s and a bare readdir took 4.3s.
+        #
+        # Nothing in this fork relies on follow-through: the only caller is
+        # Shinobu::update_filemap(), which is a pure path scan (it excludes
+        # directories with its own -d test and matches archives with a regex),
+        # so symlink detection is not wanted here anyway.
         find(
-            {   wanted => $wanted,
-                no_chdir    => 1,
-                follow_fast => 1
+            {   wanted   => $wanted,
+                no_chdir => 1
             },
             $path
         );

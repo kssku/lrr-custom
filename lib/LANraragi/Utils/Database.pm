@@ -62,11 +62,41 @@ sub get_all_archive_ids ($redis = undef) {
 
     my $logger = get_logger( "Archive", "lanraragi" );
     $logger->warn(
-        "arcids_idx is missing; falling back to a full KEYS scan. " .
-        "Run script/migrate_arcids.pl to restore the paging index."
+        "arcids_idx is missing; falling back to a full KEYS scan and rebuilding the index."
     );
 
-    return $redis->keys('????????????????????????????????????????');
+    my @keys = $redis->keys('????????????????????????????????????????');
+
+    # CUSTOM FORK (feature/path-hash-id): rebuild the paging index in place.
+    #
+    # A fresh deployment -- or one upgraded from a build where
+    # add_archive_to_redis() did not create the index -- has archive hashes in
+    # db0 but no arcids_idx zset. Rather than leaving every page on the KEYS
+    # fallback forever (and requiring the operator to know about
+    # script/migrate_arcids.pl), the index is built here on first use.
+    #
+    # This runs once: after it, the zset exists and the fast path above is taken.
+    # Scores start above any existing counter value so the monotonic guarantee
+    # (scores are never reused) holds for ids added later as well.
+    if (@keys) {
+        my $seq = $redis->get('arcids_idx_seq') // 0;
+        my @args;
+        for my $k (@keys) {
+            push @args, ++$seq, $k;
+        }
+
+        # Chunked: a single ZADD with every pair would be a multi-megabyte
+        # request on a 300k-archive library.
+        while (@args) {
+            my @chunk = splice( @args, 0, 20_000 );
+            $redis->zadd( 'arcids_idx', @chunk );
+        }
+        $redis->set( 'arcids_idx_seq', $seq );
+
+        $logger->info( sprintf( 'Rebuilt arcids_idx: %d id(s), seq=%d.', scalar @keys, $seq ) );
+    }
+
+    return @keys;
 }
 
 # Creates a DB entry for a file path with the given ID.
@@ -104,12 +134,21 @@ sub add_archive_to_redis ( $id, $file, $redis, $redis_search, $want_size = 0 ) {
     # CUSTOM FORK (feature/path-hash-id): register the new ID in the paging index.
     # The score is a monotonic sequence number so pages stay stable over time;
     # numbers are never reused, so a deletion cannot shift an existing page.
-    # Only assigned when the index already exists -- migrate_arcids.pl creates it
-    # (and must be run before this fork is deployed, otherwise use the KEYS path).
-    if ( $redis->exists('arcids_idx') ) {
-        my $seq = $redis->incr('arcids_idx_seq');
-        $redis->zadd( 'arcids_idx', $seq, $id );
-    }
+    #
+    # The index is CREATED ON DEMAND here. Upstream of this fix the write was
+    # guarded by `if ($redis->exists('arcids_idx'))`, which is a deadlock on a
+    # fresh deployment: the zset is only created by script/migrate_arcids.pl, so
+    # a deployment that did not run it first never grew an index at all and every
+    # page silently fell back to a full KEYS scan -- exactly the cost this fork
+    # exists to remove.
+    #
+    # Creating it lazily is safe because a ZADD implicitly creates the zset: the
+    # guard only has to decide whether to backfill the ids that were stored
+    # before the index existed. The backfill is idempotent (ZADD on an existing
+    # member only updates its score, and the score is assigned from the sequence
+    # counter, never recomputed), so re-running is harmless.
+    my $seq = $redis->incr('arcids_idx_seq');
+    $redis->zadd( 'arcids_idx', $seq, $id );
 
     # New archives can't be in a tank, so add them to the search set by default
     $redis_search->sadd( "LRR_TANKGROUPED", $id );

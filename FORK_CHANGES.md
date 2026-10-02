@@ -94,7 +94,7 @@
 - 本 fork：读 `arcids_idx` zset（`ZRANGE`）
 - 新增 `arcids_idx`（db0）作为分页索引，**单调递增 score，永不复用** → 翻页顺序稳定
 - `add_archive_to_redis` / `delete_archive` / `change_archive_id` 三者同步维护该索引
-- **索引缺失时自动回退 `KEYS`** → 部署顺序安全
+- **索引缺失时自动回退 `KEYS` 并就地重建索引** → 全新部署自愈，无需手工迁移
 - 新增脚本：`script/migrate_arcids.pl`（幂等，支持 dry-run）、`script/bench_arcids.pl`、`script/bench_http.pl`
 - `public/js/batch.js` 改为逐页拉取 `?start=N`
 
@@ -215,11 +215,41 @@
 
 | 宿主 | 容器内 | 模式 | 说明 |
 |---|---|---|---|
-| `<宿主 FUSE 路径>` | `content/<来源>` | **ro,rshared** | **网盘 FUSE 只读挂载** |
+| `<宿主 FUSE 路径>` | `content/<来源>` | **ro** | **网盘 FUSE 只读挂载**（⚠️ **不要加 `rshared`**，见下方警告） |
 | `<数据目录>/database` | `database` | rw | redis 数据落地 |
 | `<数据目录>/thumb` | `thumb` | rw | 缩略图 |
 | `<数据目录>/plugins` | `.../Plugin/Sideloaded` | rw | 插件 |
 | `<override 路径>/Utils/Database.pm` | `.../Utils/Database.pm` | **ro** | **补丁覆盖** |
+
+> ⚠️ **不要给 FUSE 挂载点加 `rshared`**：它会让内核递归传播挂载事件，容器删除时 `umount` 永久阻塞 → 容器卡在 `Removal In Progress` → 只能重启 dockerd。
+
+#### 3.1 ⚠️ bind mount 跨 FUSE 的元数据开销（2026-10 实测）
+
+**结论：容器通过 bind mount 访问宿主 FUSE 时，每个文件的元数据操作比宿主侧慢数千倍。**
+
+这不是代码问题，`Ingest` 批处理也**无法规避** —— 它只降低单次遍历的爆炸半径，不改变 per-file 成本。
+
+同一目录 `wnacg/1-50000`（26417 个文件）实测：
+
+| 操作 | 宿主机（原生 FUSE） | 容器内（bind mount） |
+|---|---|---|
+| `readdir` 26417 条目 | 0.003s | **6.45s** |
+| `stat` 200 个文件 | 0.00s | **1.13s**（5.7 ms/个） |
+| `getxattr` 100 个文件 | — | **6.62s**（66 ms/个） |
+| `File::Find` 全分片 | **1.0s** | **>60s（未完成）** |
+
+**成因**：宿主侧 dentry 缓存已预热，容器内因挂载命名空间隔离无法复用；且挂载参数含 `default_permissions`，每次元数据访问额外发起一轮 FUSE 权限检查。
+
+**按 5.7 ms/文件推算**：26417 文件 × 5.7ms ≈ **150 秒/分片** —— 这正是首扫「每分片 2.5 分钟」的来源。全库 30 万文件首扫因此需数小时。
+
+**缓解方向（按收益排序）**：
+
+1. 改用 Docker **named volume** 而非 bind mount（内核路径不同，可能显著更快）—— 需实测验证
+2. 查询 CloudFS 是否支持 `actimeo` 等属性缓存参数，延长缓存有效期
+3. `LRR_SHINOBU_WATCH_DIRS` 只配真正需要监听的目录，缩小首扫范围
+4. **首扫一次性完成后**，后续靠 inotify 增量，不再有此成本
+
+> 注：官方上游 `01-lrr-setup` 默认对 `content/` 递归 `chmod`（`LRR_AUTOFIX_PERMISSIONS=1`），在 30 万文件 + 慢 FUSE 上会让容器启动卡住很久。大库部署建议设 `LRR_AUTOFIX_PERMISSIONS=0`。
 
 ### 4. override 补丁机制
 

@@ -70,7 +70,7 @@
 - 上游：每次请求 `KEYS '????…'`（十万级键扫描，秒级 + 数 MB 传输）
 - 本 fork：`ZRANGE arcids_idx`（**亚秒级**）
 - `add_archive_to_redis` / `delete_archive` / `change_archive_id` 三者同步维护
-- **索引缺失时自动回退 `KEYS`** → 部署顺序安全
+- **索引缺失时自动回退 `KEYS` 并就地重建索引** → 全新部署自愈，无需手工迁移
 
 > ⚠️ 索引**不能**命名为 `LRR_*` 前缀 —— Minion 会 MOVE-drain 该前缀的键。
 

@@ -44,6 +44,11 @@ use LANraragi::Utils::Redis      qw(redis_encode);
 # the path hash and never touches the file body.
 use LANraragi::Utils::Path       qw(create_path find_path get_archive_path);
 
+# CUSTOM FORK (feature/path-only-shinobu): the initial scan is driven through the
+# batched ingest engine instead of one unbounded update_filemap() walk. See the
+# comment at the call site in initialize_from_new_process().
+use LANraragi::Utils::Ingest;
+
 use LANraragi::Model::Config;
 use LANraragi::Model::Plugins;
 use LANraragi::Model::Metrics;
@@ -96,8 +101,57 @@ sub initialize_from_new_process {
     my @watchdirs = get_watch_dirs();
 
     if (@watchdirs) {
-        update_filemap(@watchdirs);
-        $logger->info("Initial scan complete! Adding watcher to configured folders to monitor for further file edits.");
+
+        # CUSTOM FORK (feature/path-only-shinobu): the initial scan is BATCHED.
+        #
+        # A single update_filemap(@watchdirs) walks every configured root with
+        # File::Find in one go. On a remote FUSE mount that unbounded walk is the
+        # failure mode this fork exists to avoid: CloudFS answers the getxattr()
+        # calls that File::Find's per-entry -d test triggers very badly, and a
+        # walk of one shard (1-50000, 26,419 entries) was measured to wedge the
+        # mount. See LANraragi::Utils::Ingest for the full analysis.
+        #
+        # Ingest::ingest_batched() instead enumerates the immediate
+        # SUBDIRECTORIES of each root (one readdir per root, bounded) and points
+        # update_filemap() at a small batch of them at a time. Each batch is
+        # therefore a bounded traversal, and between batches the FUSE waiting
+        # counter is checked so the run stops before the mount becomes unusable.
+        #
+        # The cursor makes the scan resumable: if a run aborts, the next start
+        # skips the units already done. Re-ingesting a unit is harmless anyway
+        # because update_filemap() diffs against LRR_FILEMAP.
+        #
+        # Both env knobs are optional and default to safe values.
+        my $batch_size = $ENV{LRR_SHINOBU_BATCH_SIZE} // 50;
+        my $batch_sleep = $ENV{LRR_SHINOBU_BATCH_SLEEP} // 2;
+
+        my $result = eval {
+            LANraragi::Utils::Ingest::ingest_batched(
+                roots       => \@watchdirs,
+                batch_size  => $batch_size,
+                batch_sleep => $batch_sleep,
+                cursor      => LANraragi::Utils::Ingest::default_cursor_path(),
+            );
+        };
+
+        if ($@) {
+            # Never let a failed batched scan keep the watcher from starting:
+            # the inotify watcher below still picks up new files from now on,
+            # and a re-run of the scan resumes from the saved cursor.
+            $logger->error("Batched initial scan failed: $@");
+            $logger->error("The watcher will still start; new files are picked up by inotify.");
+        } elsif ( $result->{stopped} == 0 ) {
+            $logger->info( sprintf(
+                "Initial scan complete: %d unit(s) in %d batch(es), %.1fs.",
+                $result->{ingested}, $result->{batches}, $result->{elapsed} // 0 ) );
+        } else {
+            $logger->warn( sprintf(
+                "Initial scan stopped early (%s): %d unit(s) in %d batch(es), %.1fs. "
+                    . "Cursor saved -- restart the container to resume where it stopped.",
+                $result->{reason}, $result->{ingested}, $result->{batches}, $result->{elapsed} // 0 ) );
+        }
+
+        $logger->info("Adding watcher to configured folders to monitor for further file edits.");
     } else {
         $logger->info(
             "No LRR_SHINOBU_WATCH_DIRS configured; skipping initial scan and starting with an empty watch set.");
