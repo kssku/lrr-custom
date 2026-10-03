@@ -134,8 +134,23 @@ sub enumerate_units ($root) {
 # --- cursor -----------------------------------------------------------------
 
 sub default_cursor_path {
-    my $data = $ENV{LRR_DATA_DIRECTORY} // '/home/koyomi/lanraragi';
-    return File::Spec->catfile( $data, 'ingest_cursor.json' );
+
+    # CUSTOM FORK (feature/path-hash-id): the cursor used to be written under
+    # LRR_DATA_DIRECTORY -- but that variable is the CONTENT ROOT, and the
+    # content mount is typically read-only (:ro) on FUSE backends. Every
+    # _save_cursor() then hit EROFS, logged a warning, and returned; the cursor
+    # was silently lost and each restart rescanned from scratch.
+    #
+    # Scan state is not content: park it in the writable data directory
+    # (the image VOLUME /home/koyomi/lanraragi/database). LRR_INGEST_CURSOR
+    # overrides the directory outright.
+    my $dir = $ENV{LRR_INGEST_CURSOR};
+    unless ( defined $dir && length $dir ) {
+        $dir = -d '/home/koyomi/lanraragi/database'
+            ? '/home/koyomi/lanraragi/database'
+            : '/home/koyomi/lanraragi';
+    }
+    return File::Spec->catfile( $dir, 'ingest_cursor.json' );
 }
 
 sub _load_cursor ($path) {
