@@ -63,7 +63,9 @@
 
 - 上游 dev 版**无条件启动 Shinobu**（文件监听）
 - 恢复该环境变量开关，避免在网盘 FUSE 上遍历卡死
-- 生产环境已设 `LRR_DISABLE_SHINOBU=1`
+- **后续进展**：`readdir` 扫描替代 `File::Find` 后（见 §9），Shinobu 在 FUSE 上已可用，
+  因此当前部署改为 **`LRR_DISABLE_SHINOBU=0`（启用）**，并用 `LRR_SHINOBU_WATCH_DIRS` 限定作用域。
+  该开关保留的意义是「FUSE 异常时的逃生通道」，而非常态关闭。
 
 **实测效果（十万级库）：**
 
