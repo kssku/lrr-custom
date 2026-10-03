@@ -221,10 +221,10 @@ my $root = LANraragi::Model::Config::get_userdir();
 
 ### 5.1 镜像
 
-不是官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v3`**，基于 `tools/build/docker/Dockerfile`。
+不是官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v14`**，基于 `tools/build/docker/Dockerfile`。
 
 ```bash
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 ```
 
 > `v2` 存在 `perl5` 目录属主坑，已在 `99c08815` 于 Dockerfile 内预建目录（属主 `koyomi`）修根。

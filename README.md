@@ -150,7 +150,7 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 
 ## 部署要点（与官方不同的地方）
 
-**镜像**：不是官方 `difegue/lanraragi`，而是自建镜像（`lrr-custom:v3`，基于
+**镜像**：不是官方 `difegue/lanraragi`，而是自建镜像（`lrr-custom:v14`，基于
 `tools/build/docker/Dockerfile`）。
 
 **关键环境变量**：
@@ -186,7 +186,7 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 **重建镜像**（v3 已可用）：
 
 ```bash
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 ```
 
 > v2 的 `perl5` 属主坑已在 `99c08815` 于 Dockerfile 内预建目录修根，

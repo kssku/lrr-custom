@@ -75,7 +75,7 @@
 ```yaml
 services:
   lrr:
-    image: lrr-custom:v3          # ← 你的镜像标签
+    image: lrr-custom:v14          # ← 你的镜像标签
     container_name: lrr
     restart: unless-stopped
     ports:
