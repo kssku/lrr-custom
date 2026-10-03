@@ -347,11 +347,17 @@ export function buildThumbnailDiv(data, tagTooltip = true) {
     let reader_url = new ApiURL(`/reader?id=${id}`);
     const bookmarkIcon = buildBookmarkIconElement(id, "thumbnail-bookmark-icon");
 
+    // CUSTOM FORK (feature/path-only-shinobu): no_fallback=true is deliberately NOT used
+    // here, so these divs don't trigger Minion jobs (which is what upstream's comment
+    // always intended). Upstream sent it anyway, which queued a thumbnail_task for every
+    // archive in the grid -- and that task opens the archive body on the remote FUSE mount,
+    // turning a category page view into bulk remote reads. Without the parameter the
+    // backend serves noThumb.png instead (see Archive.pm serve_thumbnail); thumbnails are
+    // then only built when the reader is actually opened.
     const thumbSrc = id.startsWith("TANK_")
-        ? new ApiURL(`/api/tankoubons/${id}/thumbnail?no_fallback=true`)
-        : new ApiURL(`/api/archives/${id}/thumbnail?no_fallback=true`);
+        ? new ApiURL(`/api/tankoubons/${id}/thumbnail`)
+        : new ApiURL(`/api/archives/${id}/thumbnail`);
 
-    // Don't enforce no_fallback=true here, we don't want those divs to trigger Minion jobs
     return `<div class="id1 context-menu swiper-slide" id="${id}">
                 <div class="id2">
                     ${buildStatusDiv(data)}

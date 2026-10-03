@@ -206,11 +206,17 @@ export function renderColumn(namespace, type, data) {
 export function renderTitle(data, type) {
     if (type === "display") {
         const bookmarkIcon = LRR.buildBookmarkIconElement(data.arcid, "title-bookmark-icon");
-        // For compact mode, the thumbnail API call enforces no_fallback=true in order to queue Minion jobs for missing thumbnails.
-        // (Since compact mode is the "base", it's always loaded first even if you're in table mode)
+        // CUSTOM FORK (feature/path-only-shinobu): no_fallback=true is deliberately NOT
+        // used here. Upstream sets it so a missing thumbnail queues a Minion job, but
+        // that job opens the archive body -- two reads on the remote FUSE mount -- for
+        // every archive that scrolls past. Since compact mode is the "base" and always
+        // renders first even in table mode, that turned merely browsing the index into a
+        // bulk remote read. Dropping the parameter makes the backend serve noThumb.png
+        // instead (Archive.pm serve_thumbnail), so thumbnails are only ever built when
+        // the reader is opened, which is what LRR_THUMBNAIL_MODE=lazy intends.
         const thumbSrc = data.arcid.startsWith("TANK_")
-            ? new LRR.ApiURL(`/api/tankoubons/${data.arcid}/thumbnail?no_fallback=true`)
-            : new LRR.ApiURL(`/api/archives/${data.arcid}/thumbnail?no_fallback=true`);
+            ? new LRR.ApiURL(`/api/tankoubons/${data.arcid}/thumbnail`)
+            : new LRR.ApiURL(`/api/archives/${data.arcid}/thumbnail`);
 
         return `${LRR.buildStatusDiv(data)}${LRR.buildPageCountDiv(data)}${bookmarkIcon}
                 <a id="${data.arcid}"
