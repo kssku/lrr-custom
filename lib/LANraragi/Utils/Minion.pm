@@ -135,11 +135,8 @@ sub add_tasks {
             my $logger = get_logger( "Minion", "minion" );
             $logger->debug("Generating page thumbnails for archive $id...");
 
-            # Get the number of pages in the archive
             my $redis = LANraragi::Model::Config->get_redis;
-            my $pages = $redis->hget( $id, "pagecount" );
 
-            my $use_hq   = LANraragi::Model::Config->get_hqthumbpages;
             my $thumbdir = LANraragi::Model::Config->get_thumbdir;
 
             my $use_jxl   = LANraragi::Model::Config->get_jxlthumbpages;
@@ -181,42 +178,22 @@ sub add_tasks {
                 }
             }
 
-            # Generate thumbnails for all pages
-            my @keys = ();
-            for ( my $i = 1; $i <= $pages; $i++ ) {
-                push @keys, $i;
-            }
+            # CUSTOM FORK (fork): page thumbnails are deliberately NOT generated
+            # in this fork -- only the cover is. The reader overlay no longer
+            # requests or displays them, and the API no longer queues a job just
+            # because a page thumbnail is missing. Rendering all N pages per open
+            # was the main cost over the remote FUSE mount (and wedged the worker
+            # before MCE was removed).
+            #
+            # The loop that used to build @keys and render pages 1..N is gone.
+            # Kept for reference:
+            #
+            # my @keys = ();
+            # for ( my $i = 1; $i <= $pages; $i++ ) { push @keys, $i; }
+            # my $sub = sub { ... extract_thumbnail( $thumbdir, $id, $i, 0, $use_hq ) ... };
+            # eval { $sub->(@keys); };
 
-            # Regen thumbnails for errythang if $force = 1, only missing thumbs otherwise
-            my $sub = sub {
-                my (@keys) = @_;
-
-                foreach my $i (@keys) {
-
-                    my $thumbname = "$thumbdir/$subfolder/$id/$i.$format";
-                    unless ( $force == 0 && -e $thumbname ) {
-                        $logger->debug("Generating thumbnail for page $i... ($thumbname)");
-                        eval { $thumbname = extract_thumbnail( $thumbdir, $id, $i, 0, $use_hq ); };
-                        if ($@) {
-                            $logger->warn("Error while generating thumbnail: $@");
-                            push @errors, $@;
-                        }
-                    }
-
-                    # Add page number to note field so it can be fetched by the API
-                    $job->note( $i => "processed", total_pages => $pages, id => $id );
-
-                }
-            };
-
-            eval {
-                # CUSTOM FIX (fork): sequential on every platform. The IS_UNIX
-                # mce_loop branch is gone because MCE::Shared's manager never
-                # completed its handshake inside a Minion job child, so the job
-                # hung in 'active' with a frozen utime and zero page files.
-                # See the note where @errors is declared.
-                $sub->(@keys);
-            };
+            $logger->debug("Skipping page thumbnail generation for $id (cover-only fork).");
 
             $redis->hdel( $id, "thumbjob" );
             $redis->quit;

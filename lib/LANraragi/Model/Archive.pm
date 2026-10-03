@@ -194,16 +194,28 @@ sub generate_page_thumbnails {
         $should_queue_job = 1;
     }
 
+    # CUSTOM FORK (fork): only the cover thumbnail is wanted in this fork. The
+    # page loop below used to queue a Minion job whenever any single page
+    # thumbnail was missing, which meant opening an archive rendered all N page
+    # thumbnails over the slow remote FUSE mount -- and, before MCE was removed
+    # from the job child, wedged the worker. Missing page thumbnails are now
+    # deliberately ignored: the reader overlay no longer requests or shows them.
+    #
+    # Original loop kept here for reference:
+    #
+    # if ( !$should_queue_job ) {
+    #     for ( my $page = 1; $page <= $pages; $page++ ) {
+    #         my $thumbname = "$thumbdir/$subfolder/$id/$page.$format";
+    #
+    #         unless ( $force == 0 && -e $thumbname ) {
+    #             $logger->debug("Thumbnail for page $page doesn't exist (path: $thumbname or force=$force), queueing job.");
+    #             $should_queue_job = 1;
+    #             last;
+    #         }
+    #     }
+    # }
     if ( !$should_queue_job ) {
-        for ( my $page = 1; $page <= $pages; $page++ ) {
-            my $thumbname = "$thumbdir/$subfolder/$id/$page.$format";
-
-            unless ( $force == 0 && -e $thumbname ) {
-                $logger->debug("Thumbnail for page $page doesn't exist (path: $thumbname or force=$force), queueing job.");
-                $should_queue_job = 1;
-                last;
-            }
-        }
+        $logger->debug("Page thumbnails for $id are not tracked in this fork; only the cover matters.");
     }
 
     if ($should_queue_job) {

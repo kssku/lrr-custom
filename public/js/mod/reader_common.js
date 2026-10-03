@@ -1242,14 +1242,12 @@ function generateThumbnails() {
             });
     };
 
-    if (state.id.startsWith("TANK_"))
-        state.content.chapters.forEach(arc => fetchThumbsForArc(arc)); // Generate thumbnails per archive
-    else
-        fetchThumbsForArc({
-            id: state.id,
-            startPage: 1,
-            endPage: state.content.pages,
-        }); // Queue a single minion job for thumbnails
+    // CUSTOM FIX (fork): page thumbnails are not wanted -- only the cover is
+    // generated. This used to POST /files/thumbnails on every reader open, which
+    // enqueued a Minion job that rendered all N page thumbnails over the slow
+    // remote FUSE mount (and, before MCE was removed, wedged the worker). The
+    // page-number overlay no longer waits for them either, so nothing here needs
+    // the job. The fetchThumbsForArc helper above is now unused but kept intact.
 }
 
 /**

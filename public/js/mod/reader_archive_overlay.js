@@ -246,11 +246,11 @@ export function updateArchiveOverlay(forceUpdate = false) {
                              title="${I18N.ReaderAddToc}" 
                              class="fas fa-book-medical page-number add-toc"></a>`;
 
-        if (state.pageThumbnails.includes(index)) thumbnail +=
-            `</div>`;
-        else thumbnail += 
-                `<i id="${index}_spinner" class="fa fa-4x fa-circle-notch fa-spin ttspinner" style="display:flex;justify-content: center; align-items: center;"></i>
-            </div>`;
+        // CUSTOM FIX (fork): page thumbnails are no longer generated (only the
+        // cover is), so state.pageThumbnails stays empty and the old check below
+        // would leave a permanent spinner on every page number. Always render the
+        // plain number instead -- the overlay is just navigation now.
+        thumbnail += `</div>`;
 
         htmlBlob += thumbnail;
     }
