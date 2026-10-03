@@ -468,7 +468,25 @@ docker run -d --name lanraragi \
 | `LRR_AUTOFIX_PERMISSIONS` | `-1` | 跳过递归 chown（FUSE 安全）|
 | `LRR_NETWORK` | `http://*:3000` | 监听地址 |
 
-### 8.2 自己发布到 Docker Hub
+### 8.2 版本标识：镜像标签 / 代号 / 上游基线
+
+三个「版本」概念不同，别混：
+
+| 名称 | 值 | 位置 | 含义 |
+|---|---|---|---|
+| **镜像标签** | `v14` | Docker tag | 本 fork 自己的构建序号 |
+| **版本代号** | `Speed of Life` | `package.json` → `version_name` | 本 fork 的独立标识（上游传统是 Bowie 作品名）|
+| **上游基线** | `0.9.81` | `package.json` → `version` | 分叉自上游哪个版本，**不可改** |
+
+`version` 显示在 Web 设置页（`Version 0.9.81 Speed of Life`）、启动日志和
+`/api/info`，也是前端静态资源的缓存键。
+
+> ⚠️ **`version` 必须严格是 `\d+\.\d+\.\d+`。** 前端 vendor 路由
+> `/js/:version/*filepath` 以该正则匹配（`lib/LANraragi/Utils/Routing.pm:74`），
+> 写成 `0.9.81-kssku` 或 `0.9.81+kssku` 会让所有 vendor 资源 **404**。
+> fork 自己的标识请放在 `version_name`，那里无格式约束。
+
+### 8.3 自己发布到 Docker Hub
 
 ```bash
 # 1) 登录（建议用 Access Token 而非密码）
@@ -498,7 +516,7 @@ docker run --rm --entrypoint sh lrr-custom:v14 -c \
 > 若 token 曾在不安全的地方出现过，**立即到
 > [hub.docker.com/settings/security](https://hub.docker.com/settings/security) 撤销重建**。
 
-### 8.3 代理依赖（网络受限环境必看）
+### 8.4 代理依赖（网络受限环境必看）
 
 若宿主机**直连 `registry-1.docker.io` 超时**（国内常见），但本地有 HTTP 代理
 （本机实测 mihomo 监听 `127.0.0.1:7890`），可让 Docker daemon 走代理。
