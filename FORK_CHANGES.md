@@ -431,13 +431,70 @@ docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'
 **代价**：若某用户 content 根下**直接堆了几十万文件**（无分片），自动探测会扫它。
 但上游行为**同样会扫**（上游就是全量遍历），因此不比官方差。
 
+### 14. 扫描断点移到可写目录 + 入库改顺序执行
+
+**问题一：断点文件从未写出过**（`lib/LANraragi/Utils/Ingest.pm`）
+
+`default_cursor_path()` 用 `LRR_DATA_DIRECTORY` 拼 `ingest_cursor.json` 的路径，
+但该变量是 **content 根**，而 content 在 FUSE 上通常以 `:ro` 挂载。
+`_save_cursor()` 的 `open('>', $tmp)` 因此必失败 → 打一条 warn 后 `return`，
+**断点静默丢失**，每次重启从头重扫。
+
+实测：容器与宿主上**都找不到**该文件，content 挂载确认只读
+（`touch: Read-only file system`）。
+
+改动：断点是**扫描状态**而非内容，改放到可写的镜像 VOLUME
+`/home/koyomi/lanraragi/database/`；`LRR_INGEST_CURSOR` 可覆盖。
+
+实测对比：
+
+| | 改前 | 改后 |
+|---|---|---|
+| 路径 | `<content 根>/ingest_cursor.json` | `<data>/database/ingest_cursor.json` |
+| 可写性 | ❌ 只读挂载，写入必失败 | ✅ 可写 |
+| 首次扫描 | `2 unit(s), 0.6s` | `2 unit(s), 0.6s` |
+| **重启后** | 断点不存在 → **重扫** | `0 unit(s), 0.0s` → **断点复用** |
+
+**问题二：首次入库用 MCE 多进程并发写 Redis**（`lib/Shinobu.pm`）
+
+Unix 分支用 `mce_loop` 并发跑 `add_new_files()`。该函数在本 fork 里
+**只剩 Redis 写入**（`compute_id` 只哈希路径，`add_new_file` 已移除
+`get_filelist` / 体积轮询 / 缩略图生成），并发因此只带来两个问题：
+
+1. **正确性**：`add_new_files()` 写 db0（archive hash、`arcids_idx`）与 db3
+   （`INDEX_*` / `LRR_STATS`）。并发写可能在 `arcids_idx` 序号上竞争、重复计数 stats。
+2. **风险**：MCE 正是本 fork 里卡死 Minion 作业的**同一机制**。
+
+改动：**全平台改顺序执行**，移除 `use MCE::Loop`。
+
+**为什么吞吐代价可接受**：实测 Redis 单次写 ~200µs，每归档约 10 次写 ⇒ ~2ms/归档。
+5 万归档的首次扫描约多花 100 秒 —— 而同一场扫描里 FUSE 的 `readdir` 遍历
+是**几十分钟**量级（`wnacg` 一层 9 个目录就要 35 秒），串行写完全被淹没。
+
+**实测证据**（6 个真实归档，2 个一级子目录，不设 `WATCH_DIRS`）：
+
+```
+auto-detected 2 watch director(ies) under the content root.
+Found 6 new files.
+Adding new file .../a/1.cbz     with ID 21e99869...
+Adding new file .../a/10.cbz    with ID d7974a44...
+Adding new file .../a/10000.cbz with ID 19278baa...
+Adding new file .../a/10001.cbz with ID 44a65899...
+Adding new file .../b/10002.cbz with ID 12fd60c1...
+Adding new file .../b/10003.cbz with ID 24a01954...
+Initial scan complete: 2 unit(s) in 1 batch(es), 0.6s.
+```
+
+6 个文件按 a/1 → a/10 → a/10000 → a/10001 → b/10002 → b/10003 **严格顺序**入库，
+并发下不会如此整齐。`/proc` 扫描无任何 MCE 进程残留。
+
 ---
 
 ## (B) 部署层面的改动（不在 Git 中）
 
 ### 1. 镜像
 
-**不是**官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v3`**。
+**不是**官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v14`**。
 
 **构建方式（2026-10-03 核实，此前文档说「本机无 Dockerfile」已过时）**：
 
@@ -507,7 +564,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 
 ### 4. override 补丁机制 —— ⚠️ 已废弃
 
-> **自镜像 `lrr-custom:v3` 起，本机制不再使用。** 修复已全部进镜像源码。
+> **自镜像 `lrr-custom:v14` 起，本机制不再使用。** 修复已全部进镜像源码。
 > 本节保留作为历史记录，**新部署不要启用**。
 
 **当年为什么需要**：早期镜像代码是烤死的（当时仓库无 Dockerfile），`docker exec` 改文件会在容器重建时丢失。
@@ -567,6 +624,8 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | Minion 作业子进程 | 作业卡 `active`，worker 被拖死 | **顺序执行，正常完成** |
 | 坏缩略图 | libvips die → 前端无限重试 → D 状态堆积 | **魔术字节拦截 + 3 次熔断** |
 | 挂载即用 | 官方镜像开箱可用 | **需 0 个环境变量**（`WATCH_DIRS` 自动探测、`AUTOFIX` 默认 -1）|
+| 扫描断点 | — | **写入可写目录，重启复用**（改前写只读 content，静默丢失）|
+| 首次入库 | 多进程并发写 | **顺序执行**，与 Minion 同源的 MCE 已移除 |
 
 > ℹ️ **关于启动索引重建**：本 fork 禁用的是**上游那种每次启动都全量重跑**的行为
 > （大库上要十几分钟，且失败会循环重试）。取而代之的是 s6 一次性服务 `index-init`：
