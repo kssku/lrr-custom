@@ -252,7 +252,9 @@
 > *"Don't enforce no_fallback=true here, we don't want those divs to trigger Minion jobs"*
 > —— 代码与注释矛盾，本次改动**让代码符合其注释的意图**。
 
-> `public/js/mod/edit.js:104` 无需改动：它调用的是裸 `/api/archives/<id>/thumbnail`，本就不触发生成。
+> 归档编辑页调用的是裸 `/api/archives/<id>/thumbnail`（不带 `no_fallback`），
+> 本就不触发生成，因此该页无需改动。（旧版此处引用 `public/js/mod/edit.js`，
+> 该文件已随前端重构消失，改为描述行为而非路径。）
 
 **生效方式**：前端文件在 `Dockerfile:128` 被 `COPY /public public` 烤进镜像，
 `public/` **不在 compose 挂载表中** —— 改完必须**重建镜像**才生效。
@@ -392,6 +394,45 @@ docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'
 
 ---
 
+### 13. 「挂载即用」默认值（`LRR_SHINOBU_WATCH_DIRS` 自动探测 + `AUTOFIX` 默认 -1）
+
+**问题**：官方镜像 `docker run -v ...:/content ... difegue/lanraragi` 起来就能用，
+而本 fork 有 **2 个环境变量必须手填**，否则①库永远空白 ②容器静默挂起。
+
+| # | 变量 | 不设时的行为（改前） | 是否阻断即用 |
+|---|---|---|---|
+| 1 | `LRR_SHINOBU_WATCH_DIRS` | **拒绝扫描**（`Shinobu.pm` 直接 return）→ 库空白 | ⚠️ **致命** |
+| 2 | `LRR_AUTOFIX_PERMISSIONS` | Dockerfile 硬编码 `1` → s6 递归 `chown` → **FUSE 上静默死锁** | ⚠️ **致命** |
+
+**改动**：
+
+1. **`lib/Shinobu.pm` `get_watch_dirs()`**：未设时自动枚举 content 根的一级子目录作为作用域。
+   - 用 `defined()` 判断（非真值）：显式空串 `""` 仍是「禁用扫描」的逃生开关
+   - 只做一次 `readdir`，**不引入逐条目 `stat`**
+   - 粒度正确：`ingest_batched()` 枚举每个 root 的直接子目录为扫描单元，
+     取 content 根的一级子目录 ⇒ 单元正好落在分片/年份目录上
+
+2. **`tools/build/docker/Dockerfile`**：`LRR_AUTOFIX_PERMISSIONS=1` → **`-1`**。
+   - 权限问题**可见可修**；FUSE 上的递归 `chown` 是**静默死锁**
+   - 本地磁盘部署若依赖自动修权限，显式设 `LRR_AUTOFIX_PERMISSIONS=1` 即可
+
+**三种取值的行为（`LRR_SHINOBU_WATCH_DIRS`）**：
+
+| 取值 | 行为 |
+|---|---|
+| **不设** | 自动枚举 content 根一级子目录（推荐，即挂载即用）|
+| **空串 `""`** | 显式禁用扫描（逃生开关，行为同改前的不设）|
+| `"wnacg:pika"` | 只扫这两个（**完全不变**，向后兼容）|
+
+**为什么粒度不会错**：自动探测**永远从 content 根往下取一级**，
+结构上不可能犯「配叶子分片」的错 —— 而手配 `wnacg/1-50000` 会让
+`enumerate_units` 找不到子目录，把整个分片当成一个单元，逐个 `stat` 5 万个归档。
+
+**代价**：若某用户 content 根下**直接堆了几十万文件**（无分片），自动探测会扫它。
+但上游行为**同样会扫**（上游就是全量遍历），因此不比官方差。
+
+---
+
 ## (B) 部署层面的改动（不在 Git 中）
 
 ### 1. 镜像
@@ -415,7 +456,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 
 | 变量 | 值 | 作用 |
 |---|---|---|
-| `LRR_CONTENT_DIR` | `<content 根目录>` | 内容根目录 |
+| `LRR_DATA_DIRECTORY` | `<content 根目录>` | 内容根目录。**不是** `LRR_CONTENT_DIR`——该变量在代码中不存在（见 PROJECT.md §3.1） |
 | `LRR_DISABLE_SHINOBU` | **`0`** | **启用监听**（`readdir` 扫描已修好，见 (A) 9）。未设即启用 |
 | `LRR_SHINOBU_WATCH_DIRS` | `<顶层目录>` | 监听/首扫范围，用 `:` 分隔。**配顶层目录**（如 `wnacg`），不要配叶子分片 |
 | `LRR_AUTOFIX_PERMISSIONS` | `-1` | 权限修正策略 |
@@ -462,7 +503,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 3. `LRR_SHINOBU_WATCH_DIRS` 只配真正需要监听的目录，缩小首扫范围
 4. **首扫一次性完成后**，后续靠 inotify 增量，不再有此成本
 
-> 注：官方上游 `01-lrr-setup` 默认对 `content/` 递归 `chmod`（`LRR_AUTOFIX_PERMISSIONS=1`），在 30 万文件 + 慢 FUSE 上会让容器启动卡住很久。大库部署建议设 `LRR_AUTOFIX_PERMISSIONS=0`。
+> 注：官方上游 `01-lrr-setup` 默认对 `content/` 递归 `chmod`（`LRR_AUTOFIX_PERMISSIONS=1`），在 30 万文件 + 慢 FUSE 上会让容器启动卡住很久。大库部署建议设 `LRR_AUTOFIX_PERMISSIONS=-1`（跳过修正）。
 
 ### 4. override 补丁机制 —— ⚠️ 已废弃
 
@@ -525,6 +566,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | 打开阅读器 | 生成封面 + 全部页面缩略图（逐页读远端归档）| **只生成封面**，零页面读取 |
 | Minion 作业子进程 | 作业卡 `active`，worker 被拖死 | **顺序执行，正常完成** |
 | 坏缩略图 | libvips die → 前端无限重试 → D 状态堆积 | **魔术字节拦截 + 3 次熔断** |
+| 挂载即用 | 官方镜像开箱可用 | **需 0 个环境变量**（`WATCH_DIRS` 自动探测、`AUTOFIX` 默认 -1）|
 
 > ℹ️ **关于启动索引重建**：本 fork 禁用的是**上游那种每次启动都全量重跑**的行为
 > （大库上要十几分钟，且失败会循环重试）。取而代之的是 s6 一次性服务 `index-init`：
@@ -551,6 +593,8 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
   - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
   - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
   - `public/js/mod/common.js` ← 去掉 `no_fallback=true`
+  - `lib/Shinobu.pm` ← 纯路径扫描 + 作用域监听 + **未设时自动探测一级子目录**
+  - `tools/build/docker/Dockerfile` ← `LRR_AUTOFIX_PERMISSIONS` 默认 `1`→`-1`
   - `public/js/mod/index_datatables.js` ← 去掉 `no_fallback=true`
 - 手工引入上游代码后，用 `git diff` 逐个比对上述文件是否被覆盖
   （**不要**再依赖已废弃的 `override/` 机制）

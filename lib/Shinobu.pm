@@ -214,27 +214,95 @@ sub initialize_from_new_process {
 # hours, which is why the deployment had to set LRR_DISABLE_SHINOBU=1 and the
 # file watcher never ran at all.
 #
-# Instead, the watched roots are configured explicitly:
+# The watched roots can be configured explicitly:
 #
 #   LRR_SHINOBU_WATCH_DIRS=/content/wnacg/350001-400000:/content/new
 #
 # (colon-separated, absolute paths, or paths relative to the content folder).
-# Unset/empty => nothing is scanned and nothing is watched: the watcher starts
-# but stays inert, which is the safe default and matches the previous
-# LRR_DISABLE_SHINOBU=1 behaviour without needing the kill switch.
+#
+# CUSTOM FORK (mount-and-go defaults): when the variable is NOT set at all, the
+# immediate SUBDIRECTORIES of the content root are used as the watch set. This
+# is the correct granularity for the batched ingest: ingest_batched() enumerates
+# the immediate subdirectories of each root as its scan units (see the call site
+# above), so pointing at the content root's children means the units come out as
+# the shard/year directories -- exactly the boundary the deployment used to have
+# to spell out by hand. It also cannot reproduce the leaf-shard mistake: the walk
+# never descends past one level here, whereas configuring a leaf shard such as
+# "wnacg/1-50000" leaves enumerate_units with no subdirectories and degrades the
+# whole shard into a single unit, stat()ing all 50k archives.
+#
+# Only one readdir of the content root is performed, so this introduces no
+# per-entry stat() -- the FUSE cost this fork exists to avoid.
+#
+# Explicit configuration always wins:
+#   - set to a non-empty list  => only those roots (unchanged behaviour)
+#   - set to the empty string  => nothing scanned, nothing watched (kill switch)
+#   - unset                    => auto-detect the content root's children
 sub get_watch_dirs {
-
-    my $env = $ENV{LRR_SHINOBU_WATCH_DIRS} // '';
-    my @dirs = grep { length } split /:/, $env;
 
     my $userdir = LANraragi::Model::Config->get_userdir;
 
-    # Relative entries are resolved against the content folder.
-    @dirs = map { m{^/} ? $_ : File::Spec->catdir( $userdir, $_ ) } @dirs;
+    # defined() and not truthiness: an explicitly empty value is a deliberate
+    # "disable scanning" request and must not be turned into auto-detection.
+    my $env = $ENV{LRR_SHINOBU_WATCH_DIRS};
 
-    # Never watch the whole content root: that is the exact case we are avoiding.
+    my @dirs;
+    if ( !defined $env ) {
+        @dirs = _content_root_subdirs($userdir);
+    }
+    else {
+        @dirs = grep { length } split /:/, $env;
+
+        # Relative entries are resolved against the content folder.
+        @dirs = map { m{^/} ? $_ : File::Spec->catdir( $userdir, $_ ) } @dirs;
+
+        # Never watch the whole content root: that is the exact case we are avoiding.
+        my $root = create_path($userdir);
+        @dirs = grep { create_path($_) ne $root } @dirs;
+    }
+
+    return @dirs;
+}
+
+# Enumerate the immediate subdirectories of the content root, for the
+# mount-and-go default described above.
+#
+# Uses opendir/readdir only: no stat() per entry, so it stays cheap on FUSE.
+# The archive-extension regex is reused as the file/directory discriminator --
+# is_archive() anchors on an archive suffix and therefore can never match a
+# directory name, which is the same trick _scan_archives() relies on. Entries
+# that are not archives are stat()ed solely to decide whether they are
+# directories; shard roots hold almost exclusively directories, so this is a
+# handful of stats per root, not per archive.
+sub _content_root_subdirs ($userdir) {
+
     my $root = create_path($userdir);
-    @dirs = grep { create_path($_) ne $root } @dirs;
+
+    opendir( my $dh, $root ) or do {
+        $logger->warn("Could not open content folder $root: $!; nothing will be scanned.");
+        return ();
+    };
+    my @entries = readdir $dh;
+    closedir $dh;
+
+    my @dirs;
+    for my $name (@entries) {
+        next if $name eq '.' || $name eq '..';
+
+        # Archives cannot be watch roots; skip them without a stat.
+        next if is_archive($name);
+
+        my $path = create_path( File::Spec->catdir( $root, $name ) );
+        push @dirs, $path if -d $path;
+    }
+
+    $logger->info( "LRR_SHINOBU_WATCH_DIRS is unset; auto-detected "
+            . scalar(@dirs)
+            . " watch director(ies) under the content root." )
+        if @dirs;
+
+    $logger->warn("LRR_SHINOBU_WATCH_DIRS is unset and the content root $root has no subdirectories; nothing will be scanned.")
+        unless @dirs;
 
     return @dirs;
 }

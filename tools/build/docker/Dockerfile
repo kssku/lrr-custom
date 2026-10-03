@@ -29,8 +29,18 @@ ENV LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 LANGUAGE=en_US.UTF-8 \
     MOJO_PROXY=1 \
     # Allow Mojo to automatically pick up the X-Forwarded-For and X-Forwarded-Proto headers
     MOJO_REVERSE_PROXY=1 \
-    # Attempt to fix file permissions automatically
-    LRR_AUTOFIX_PERMISSIONS=1
+    # Do NOT fix file permissions automatically.
+    #
+    # CUSTOM FORK (mount-and-go defaults): upstream defaults this to 1, which
+    # makes s6's 01-lrr-setup recursively chown/chmod the content volume on every
+    # boot. That is friendly on a local disk and a silent deadlock on a network
+    # FUSE mount (CloudDrive2/115): the filesystem does not implement chown, the
+    # syscall blocks, and the container hangs in its init stage with no error.
+    #
+    # A permission problem is at least visible and fixable; a wedged mount is
+    # neither. Deployments on local storage that relied on the old behaviour can
+    # set LRR_AUTOFIX_PERMISSIONS=1 explicitly.
+    LRR_AUTOFIX_PERMISSIONS=-1
 
 RUN \
   if [ $(getent group ${LRR_GID}) ]; then \
