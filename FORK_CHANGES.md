@@ -496,6 +496,20 @@ Initial scan complete: 2 unit(s) in 1 batch(es), 0.6s.
 
 **不是**官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v14`**。
 
+**已发布到 Docker Hub（2026-10-04）**：
+
+```
+kssku123/lrr-custom:v14
+kssku123/lrr-custom:latest
+```
+
+拉取：`docker pull kssku123/lrr-custom:v14`
+
+- 两个标签 digest 相同（`sha256:79f40208...`）
+- 发布前已审计：镜像内 `content` / `database` / `thumb` 全空，无归档文件、无密钥、无 `.git`
+- **发布需要代理**，见 `DEPLOY.md` §8.3 —— 直连 `registry-1.docker.io` 在本机网络下超时，
+  必须让 Docker daemon 走 `127.0.0.1:7890`（mihomo）
+
 **构建方式（2026-10-03 核实，此前文档说「本机无 Dockerfile」已过时）**：
 
 ```bash
@@ -503,10 +517,10 @@ cd <仓库根>
 docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 ```
 
-- `tools/build/docker/Dockerfile` **存在于仓库**（136 行，多阶段构建：`base` → `build` → `runtime`）
-- `Dockerfile:128` 的 `COPY /public public` 是**前端文件烤进镜像**的位置 ——
+- `tools/build/docker/Dockerfile` **存在于仓库**（157 行，多阶段构建：`base` → `build` → `runtime`）
+- `Dockerfile:149` 的 `COPY /public public` 是**前端文件烤进镜像**的位置 ——
   改 `public/js/**` 后**必须重建镜像**才生效（`public/` 不在 compose 挂载表中）
-- `Dockerfile:106` 有 fork 专属修复：预建 `/home/koyomi/perl5` 并 `chown koyomi`，
+- `Dockerfile:116` 有 fork 专属修复：预建 `/home/koyomi/perl5` 并 `chown koyomi`，
   避免 local::lib 以 uid 9001 启动时无法创建 `perl5/bin`
 
 ### 2. 环境变量
