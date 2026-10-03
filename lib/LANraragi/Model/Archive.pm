@@ -270,7 +270,23 @@ sub serve_thumbnail {
 
     unless ( -e $thumbname ) {
 
+        # CUSTOM FORK (feature/path-only-shinobu): circuit breaker for broken archives.
+        # An archive whose page 0 cannot be decoded (0 bytes / non-image data) makes
+        # extract_thumbnail die every time. The reader keeps re-requesting the thumbnail,
+        # so the same archive is re-queued forever, and every attempt opens the archive
+        # body on the remote FUSE mount -- piling up D-state processes until the container
+        # is dragged down. Utils/Minion.pm increments thumbfail:<id> on failure and clears
+        # it on success; after 3 consecutive failures we stop queueing and serve the
+        # placeholder instead.
+        my $thumbfail = 0;
         if ($no_fallback) {
+            my $redis   = LANraragi::Model::Config->get_redis;
+            my $failkey = "thumbfail:$id";
+            my $v       = $redis->get($failkey);
+            $thumbfail = $v if defined $v;
+        }
+
+        if ( $no_fallback && $thumbfail < 3 ) {
 
             # Queue a minion job to generate the thumbnail. Thumbnail jobs have the lowest priority.
             my $job_id = $self->minion->enqueue( thumbnail_task => [ $thumbdir, $id, $page ] => { priority => 0, attempts => 3 } );

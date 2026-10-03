@@ -45,13 +45,38 @@ sub add_tasks {
             my $use_hq    = $page eq 0 || LANraragi::Model::Config->get_hqthumbpages;
             my $thumbname = "";
 
+            # CUSTOM FORK (feature/path-only-shinobu): thumbnail failure circuit breaker.
+            # The counter is maintained here (increment on failure, clear on success) and
+            # read in Model/Archive.pm::serve_thumbnail. Without this write half the breaker
+            # would read a key nobody ever sets and never trip. It matters because a broken
+            # image makes libvips die, which fails the task, which makes the frontend ask
+            # again -- each round trip reopening the CBZ on the remote FUSE mount and piling
+            # up D-state processes. After LRR_THUMBFAIL_LIMIT failures we stop queueing.
+            my $thumbfail_key = "thumbfail:$id";
+
             # Take a shortcut here - Minion jobs can keep the old basic behavior of page 0 = cover.
             eval { $thumbname = extract_thumbnail( $thumbdir, $id, $page, $page eq 0, $use_hq ); };
             if ($@) {
                 my $msg = "Error building thumbnail: $@";
                 $logger->error($msg);
+
+                # Count consecutive failures; serve_thumbnail reads this to stop queueing.
+                eval {
+                    my $redis = LANraragi::Model::Config->get_redis;
+                    my $n     = $redis->incr($thumbfail_key);
+                    # Let the counter expire on its own so a transient failure doesn't
+                    # blacklist an archive forever.
+                    $redis->expire( $thumbfail_key, 86400 ) if $n == 1;
+                };
+
                 $job->fail( { errors => [$msg] } );
             } else {
+                # Success: clear the failure counter so the breaker resets.
+                eval {
+                    my $redis = LANraragi::Model::Config->get_redis;
+                    $redis->del($thumbfail_key);
+                };
+
                 $job->finish($thumbname);
             }
 

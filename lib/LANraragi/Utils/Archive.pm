@@ -222,12 +222,56 @@ sub cbw_prefetch ( $archive, $id, $current_path, $count = 3 ) {
     }
 }
 
+# CUSTOM FORK (feature/path-only-shinobu): guard against corrupt image data.
+# Detect whether a byte string is a decodable image by its magic bytes.
+# Used to intercept broken images (0 bytes / non-image data) BEFORE handing
+# them to libvips, which would throw "buffer is not in a known format",
+# fail the Minion task, and make the frontend retry forever -- each retry
+# opening the CBZ and reading it from the remote FUSE mount, piling up
+# D-state processes and dragging the container down.
+sub is_decodable_image ($data) {
+    return 0 unless defined $data;
+    my $len = length $data;
+
+    # Empty or too-short data is certainly not an image.
+    return 0 if $len < 12;
+
+    my $magic = substr( $data, 0, 16 );
+
+    # JPEG: FF D8 FF
+    return 1 if $magic =~ /^\xFF\xD8\xFF/;
+    # PNG: 89 50 4E 47 0D 0A 1A 0A
+    return 1 if $magic =~ /^\x89PNG\x0D\x0A\x1A\x0A/;
+    # GIF: GIF87a / GIF89a
+    return 1 if $magic =~ /^GIF8[79]a/;
+    # WebP: RIFF....WEBP
+    return 1 if $magic =~ /^RIFF.{4}WEBP/s;
+    # BMP: BM
+    return 1 if $magic =~ /^BM/;
+    # TIFF: II*\x00 / MM\x00*
+    return 1 if $magic =~ /^(II\x2A\x00|MM\x00\x2A)/;
+    # AVIF/HEIF: ....ftyp(avif|heic|mif1|msf1)
+    return 1 if $magic =~ /^.{4}ftyp(avif|avis|heic|heix|mif1|msf1)/;
+    # JXL: FF 0A
+    return 1 if $magic =~ /^\xFF\x0A/;
+
+    return 0;
+}
+
 # use a resizer to make a thumbnail, height = 500px (view in index is 280px tall)
 # If use_hq is true, highest-quality resizing will be used (if the resizer support different quality levels).
 # If use_jxl is true, JPEG XL will be used instead of JPEG.
 sub generate_thumbnail ( $data, $thumb_path, $use_hq, $use_jxl ) {
     my $quality = 50;
     $quality = 80 if $use_hq;
+
+    # CUSTOM FORK: intercept broken images before they reach libvips.
+    unless ( is_decodable_image($data) ) {
+        my $len    = defined($data) ? length($data) : -1;
+        my $logger = get_logger( "Archive", "lanraragi" );
+        $logger->debug("Skipping thumbnail: source data is not a decodable image (bytes=$len)");
+        die "BROKEN_IMAGE: source data is not a decodable image (bytes=$len)";
+    }
 
     my $resized = get_resizer()->resize_thumbnail( $data, $quality, $use_hq, $use_jxl ? "jxl" : "jpg" );
     if ( defined($resized) ) {
