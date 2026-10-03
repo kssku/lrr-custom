@@ -198,7 +198,18 @@ sub startup {
     say "Minion will use the Redis database at $miniondb";
     $self->plugin( 'Minion' => { Redis => "redis://$redispassword$miniondb" } );
     $self->LRR_LOGGER->info("Successfully connected to Minion database.");
-    $self->minion->missing_after(5);    # Clean up older workers after 5 seconds of unavailability
+    # CUSTOM FIX (fork): was missing_after(5) -- 5 seconds, while Minion workers only
+    # re-register every heartbeat_interval (300s) in lib/Worker.pm line 64 and in
+    # Minion::Worker::run. The contradiction meant every worker was considered
+    # "missing" from the 6th second after registering until its next heartbeat, so
+    # any job still running after 5s became an orphan: Minion dropped the worker
+    # from its registry, left the job stuck in job_state.active, and no newer worker
+    # would ever pick it up (workers only consume from the pending queue). Observed
+    # as page_thumbnails jobs hanging forever after the cover had already been
+    # written -- the cover is generated before the MCE loop, so the job looked
+    # "half done" for all eternity. Restore the upstream default (1800s), which is
+    # comfortably larger than the 300s heartbeat.
+    $self->minion->missing_after(1800);    # Restore upstream default (see comment above)
 
     LANraragi::Utils::Minion::add_tasks( $self->minion );
     $self->LRR_LOGGER->debug("Registered tasks with Minion.");

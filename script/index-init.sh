@@ -56,19 +56,34 @@ cd "$LRR_DIR" || {
     exit 0
 }
 
-# Give redis a moment to accept connections. The s6 dependency only waits for
-# the service to be *started*, not for the server to be ready to serve.
+# Wait until redis is actually *serving*, not merely started.
+#
+# The s6 dependency only waits for the service to be started; the server is
+# still reading its dataset from disk at that point. During that window every
+# command answers with the error "LOADING Valkey is loading the dataset in
+# memory", and valkey-cli exits non-zero -- so a readiness test that only
+# checks the exit status can appear to succeed for the wrong reason, and worse,
+# an EXISTS issued in that window aborts the rebuild (observed as:
+#   [hexists] LOADING Valkey is loading the dataset in memory, at Redis.pm line 321.
+#   [index-init] ERROR: rebuild_stats.pl failed.
+# on a database large enough to take a few seconds to load).
+#
+# So match the literal PONG payload instead: that is the only answer meaning
+# "ready to serve". LOADING and connection errors both fail the match and we
+# keep waiting.
+REDIS_READY=0
 i=0
-while [ "$i" -lt 30 ]; do
-    if "$VALKEY_CLI" -n "$SEARCH_DB" PING >/dev/null 2>&1; then
+while [ "$i" -lt 60 ]; do
+    if [ "$("$VALKEY_CLI" -n "$SEARCH_DB" PING 2>/dev/null)" = "PONG" ]; then
+        REDIS_READY=1
         break
     fi
     i=$((i + 1))
     sleep 1
 done
 
-if ! "$VALKEY_CLI" -n "$SEARCH_DB" PING >/dev/null 2>&1; then
-    log "WARNING: redis did not become ready in 30s; skipping index check."
+if [ "$REDIS_READY" -ne 1 ]; then
+    log "WARNING: redis did not become ready in 60s; skipping index check."
     exit 0
 fi
 

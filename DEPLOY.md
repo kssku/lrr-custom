@@ -348,30 +348,60 @@ docker compose logs lrr | tail -50
 
 常见原因：归档目录路径写错、权限不足（`LRR_UID`/`LRR_GID` 与宿主机目录属主不符）。
 
-### 打开一本后，列表页封面还是占位图
+### 列表页封面一直是占位图（打开过也不刷新）
 
-**现象**：阅读器里能正常看图，回到列表页封面依旧是灰色占位图；强刷（Ctrl+F5）后才出现。
+**现象**：列表页/轮播的封面全是灰色 `noThumb.png`；强刷（Ctrl+F5）也没用；只有极个别归档有真封面。
 
-**原因**（两个叠加）：
+**根因（两层，第一层才是主因）**
 
-1. 本 fork 的懒生成设计下，封面**只在阅读器打开时才生成**。在此之前列表页拿到的是 `noThumb.png`。
-2. 列表页封面 URL 是固定的 `/api/archives/<id>/thumbnail`，**没有 cachebust 参数**——占位图和真封面是同一个 URL。若响应不带 `Cache-Control`，浏览器会启发式缓存那个占位图，之后即使真封面已生成也继续用缓存。
+**第一层：本 fork 里没有任何路径会自动生成封面。**
 
-**解决**：升级到 `v8` 或更新。该版本在 `Archive.pm` 的 `serve_thumbnail` 里为两个分支都加了缓存头：
+上游原本有三条生成封面的路径，这个 fork 全部移除了：
+
+| 路径 | 本 fork 的状态 |
+|---|---|
+| `Shinobu.pm` 入库时提取封面 | ❌ 已移除（避免入库时在 FUSE 上开压缩包） |
+| 前端列表页发 `no_fallback=true` | ❌ 已移除（避免列表页为每个归档排队、批量读盘） |
+| `page_thumbnails` 任务 | ⚠️ 原注释写「封面应已由别处高分辨率处理」，但那个「别处」正是上面前两条 |
+
+结果：`serve_thumbnail` 不带 `no_fallback` 时直接返回占位图且**不入队**；而唯一会入队的 `no_fallback=true` 前端从不发送。所以除了手工调 API，封面永远不会生成。
+
+另外 `generate_page_thumbnails` 的入队判定只检查第 `1..pagecount` 页，**从不检查封面**。于是「页面缩略图已存在、唯独封面缺失」的归档会一直返回 `No job queued, all thumbnails already exist.`，任务永远不入队。
+
+**第二层：占位图与真封面共用 URL，且无缓存头。**
+
+列表页封面 URL 固定为 `/api/archives/<id>/thumbnail`，**没有 cachebust**。若响应不带 `Cache-Control`，浏览器会启发式缓存那个占位图响应，之后真封面生成了也继续用缓存。
+
+**解决**：升级到 `v9` 或更新。该版本的三处改动：
+
+1. `Minion.pm` — `page_thumbnails` 任务**顺带生成封面（page 0）**。打开阅读器是唯一确定用户在意这本的时机，且归档本就已打开，多抽首页几乎不增加远程开销；列表页仍不批量触发。
+2. `Archive.pm` `generate_page_thumbnails` — 入队判定**纳入封面文件**，覆盖「页面齐全但封面缺失」的情况。
+3. `Archive.pm` `serve_thumbnail` — 两个分支都加缓存头：
 
 | 响应 | 头 |
 |---|---|
 | 真封面 | `Cache-Control: no-cache`（可缓存，但每次回源校验） |
 | 占位图 | `Cache-Control: no-store, must-revalidate`（禁止缓存） |
 
+即：**打开一次阅读器，该归档的封面就会生成并落盘**，回到列表页即可看到（列表页本身不触发批量生成，这是刻意保留的设计）。
+
 验证：
 
 ```bash
-# 真封面 → 应看到 Cache-Control: no-cache
-curl -sI http://127.0.0.1:3011/api/archives/<id>/thumbnail | grep -i cache-control
+ID=<某个从未打开过的归档 id>
 
-# 不存在的 id → 应看到 Cache-Control: no-store, must-revalidate
-curl -sI http://127.0.0.1:3011/api/archives/deadbeef/thumbnail | grep -i cache-control
+# 1) 模拟阅读器打开：先取文件列表（会回写 pagecount）
+curl -s "http://127.0.0.1:3011/api/archives/$ID/files" -o /dev/null
+
+# 2) 请求页面缩略图 → 应返回 job id（修复前是 "No job queued, all thumbnails already exist."）
+curl -s -X POST "http://127.0.0.1:3011/api/archives/$ID/files/thumbnails"
+
+# 3) 几秒后封面应落盘：<数据目录>/thumb/<前两位>/<id>.jpg
+ls -la <数据目录>/thumb/${ID:0:2}/ | grep "$ID"
+
+# 4) 缓存头
+curl -sI "http://127.0.0.1:3011/api/archives/deadbeef/thumbnail" | grep -i cache-control
+# → no-store, must-revalidate
 ```
 
 ### 缩略图全部生成失败（`thumb/` 目录 Permission denied）
