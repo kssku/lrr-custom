@@ -75,7 +75,7 @@
 ```yaml
 services:
   lrr:
-    image: lrr-custom:v14          # ← 你的镜像标签
+    image: lrr-custom:v15          # ← 你的镜像标签
     container_name: lrr
     restart: unless-stopped
     ports:
@@ -277,7 +277,7 @@ docker logs lrr 2>&1 | grep index-init
 
 ```bash
 cd /path/to/lrr-custom
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v15 .
 ```
 
 **注意**：构建上下文必须是**仓库根目录**（`.`），因为 Dockerfile 里引用了 `/lib`、`/public`、`/templates` 等。
@@ -438,12 +438,12 @@ Not touching content permissions          # 因为设了 -1，符合预期
 本 fork 的镜像已发布到 Docker Hub：
 
 ```bash
-docker pull kssku123/lrr-custom:v14
+docker pull kssku123/lrr-custom:v15
 # 或跟随最新
 docker pull kssku123/lrr-custom:latest
 ```
 
-`v14` 与 `latest` 指向同一镜像（digest `sha256:79f40208...`）。
+`v15` 与 `latest` 指向同一镜像（digest `sha256:b5ea63872c4e...`）。
 
 **直接运行**（0 个环境变量，挂载即用）：
 
@@ -453,7 +453,7 @@ docker run -d --name lanraragi \
   -v /你的漫画目录:/home/koyomi/lanraragi/content \
   -v /你的数据目录:/home/koyomi/lanraragi/database \
   -v /你的缩略图目录:/home/koyomi/lanraragi/thumb \
-  kssku123/lrr-custom:v14
+  kssku123/lrr-custom:v15
 ```
 
 > **content 不需要 `:ro`。** 「挂载即用」改造后，`LRR_SHINOBU_WATCH_DIRS`
@@ -474,7 +474,7 @@ docker run -d --name lanraragi \
 
 | 名称 | 值 | 位置 | 含义 |
 |---|---|---|---|
-| **镜像标签** | `v14` | Docker tag | 本 fork 自己的构建序号 |
+| **镜像标签** | `v15` | Docker tag | 本 fork 自己的构建序号 |
 | **版本代号** | `Speed of Life` | `package.json` → `version_name` | 本 fork 的独立标识（上游传统是 Bowie 作品名）|
 | **上游基线** | `0.9.81` | `package.json` → `version` | 分叉自上游哪个版本，**不可改** |
 
@@ -493,11 +493,11 @@ docker run -d --name lanraragi \
 docker login -u <你的用户名>
 
 # 2) 打标签（必须是 <用户名>/<仓库名>:<版本>）
-docker tag lrr-custom:v14 <你的用户名>/lrr-custom:v14
-docker tag lrr-custom:v14 <你的用户名>/lrr-custom:latest
+docker tag lrr-custom:v15 <你的用户名>/lrr-custom:v15
+docker tag lrr-custom:v15 <你的用户名>/lrr-custom:latest
 
 # 3) 推送
-docker push <你的用户名>/lrr-custom:v14
+docker push <你的用户名>/lrr-custom:v15
 docker push <你的用户名>/lrr-custom:latest
 ```
 
@@ -505,10 +505,10 @@ docker push <你的用户名>/lrr-custom:latest
 
 ```bash
 # content / database / thumb 应为空
-docker run --rm --entrypoint sh lrr-custom:v14 -c \
+docker run --rm --entrypoint sh lrr-custom:v15 -c \
   'ls -la /home/koyomi/lanraragi/content /home/koyomi/lanraragi/database /home/koyomi/lanraragi/thumb'
 # 无归档、无密钥
-docker run --rm --entrypoint sh lrr-custom:v14 -c \
+docker run --rm --entrypoint sh lrr-custom:v15 -c \
   'find /home/koyomi/lanraragi -name "*.cbz" -o -name "*.zip" -o -name "id_rsa" 2>/dev/null'
 ```
 

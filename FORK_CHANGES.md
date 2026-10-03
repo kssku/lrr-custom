@@ -495,16 +495,16 @@ Initial scan complete: 2 unit(s) in 1 batch(es), 0.6s.
 
 ### 1. 镜像
 
-**不是**官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v14`**。
+**不是**官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v15`**。
 
 **已发布到 Docker Hub（2026-10-04）**：
 
 ```
-kssku123/lrr-custom:v14
+kssku123/lrr-custom:v15
 kssku123/lrr-custom:latest
 ```
 
-拉取：`docker pull kssku123/lrr-custom:v14`
+拉取：`docker pull kssku123/lrr-custom:v15`
 
 - 两个标签 digest 相同（`sha256:79f40208...`）
 - 发布前已审计：镜像内 `content` / `database` / `thumb` 全空，无归档文件、无密钥、无 `.git`
@@ -515,7 +515,7 @@ kssku123/lrr-custom:latest
 
 ```bash
 cd <仓库根>
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v15 .
 ```
 
 - `tools/build/docker/Dockerfile` **存在于仓库**（157 行，多阶段构建：`base` → `build` → `runtime`）

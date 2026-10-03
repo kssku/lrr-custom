@@ -152,11 +152,11 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 
 ## 部署要点（与官方不同的地方）
 
-**镜像**：不是官方 `difegue/lanraragi`，而是自建镜像（`lrr-custom:v14`，基于
+**镜像**：不是官方 `difegue/lanraragi`，而是自建镜像（`lrr-custom:v15`，基于
 `tools/build/docker/Dockerfile`）。**已发布到 Docker Hub**：
 
 ```bash
-docker pull kssku123/lrr-custom:v14     # 或 :latest
+docker pull kssku123/lrr-custom:v15     # 或 :latest
 ```
 
 > 开箱即用的 compose 见仓库根 [`docker-compose.yml`](docker-compose.yml)，
@@ -184,18 +184,19 @@ docker pull kssku123/lrr-custom:v14     # 或 :latest
 > ⚠️ 若容器报 cgroup 相关错误（`sysvinit + elogind` 撞 cgroup namespace），
 > 加 `cgroup: host`。
 
-**override 补丁机制**（v3 起已不再需要 —— 修复已进镜像，仅作历史参考）：
-
-```yaml
-- <宿主 override 路径>/Utils/Database.pm:<容器 lib 路径>/Utils/Database.pm:ro
-```
+> ⚠️ **`override` 补丁机制（bind mount 单文件覆盖）已于 v3 废弃，不要再使用。**
+> 修复已进镜像；仓库内不存在 `override/` 目录。历史上那个
+> `docker/lrr/override/Database.pm` 是**孤儿文件** —— 无任何路径引用它，
+> 内容也已落后于仓库版本。**照抄旧文档建这个目录不会生效。**
+> 要改行为就改仓库代码、重建镜像。完整核实结论见
+> [`FORK_CHANGES.md`](./FORK_CHANGES.md) §(B)4、[`PROJECT.md`](./PROJECT.md) §5。
 
 > 详细部署配置见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) 的「(B) 部署层面的改动」。
 
 **重建镜像**（v3 已可用）：
 
 ```bash
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v15 .
 ```
 
 > v2 的 `perl5` 属主坑已在 `99c08815` 于 Dockerfile 内预建目录修根，
