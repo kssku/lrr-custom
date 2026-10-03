@@ -1,0 +1,31 @@
+# 统一编辑器行为，避免因换行符/缩进差异产生噪声 diff。
+# 见 https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Perl：本仓库用 perltidy（.perltidyrc 为权威配置），这里只兜底
+[*.{pm,pl,t}]
+indent_style = space
+indent_size = 4
+
+# 前端 / 配置 / 脚本
+[*.{js,mjs,json,yml,yaml,html,css,scss}]
+indent_style = space
+indent_size = 4
+
+[*.md]
+# Markdown 里行尾双空格是换行语义，不能裁
+trim_trailing_whitespace = false
+
+# Windows 批处理必须 CRLF
+[*.{bat,cmd}]
+end_of_line = crlf
+
+# 二进制/生成物不参与
+[{*.png,*.jpg,*.jpeg,*.gif,*.ico,*.webp,*.cbz,*.zip}]
+insert_final_newline = false

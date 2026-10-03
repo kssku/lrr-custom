@@ -10,7 +10,9 @@
 | 文档 | 内容 |
 |---|---|
 | **[`PROJECT.md`](PROJECT.md)** | **唯一权威总纲** —— 架构 / 数据流 / 部署 / 运维 / 性能基线 / 技术债 / 待办 |
+| [`DEPLOY.md`](DEPLOY.md) | **部署手册** —— 最小 compose、已发布镜像、代理依赖、常见问题排查 |
 | [`FORK_CHANGES.md`](FORK_CHANGES.md) | 相对官方上游的**全部改动**（PROJECT.md §5 的展开细节；本项目独立维护） |
+| [`CHANGELOG.md`](CHANGELOG.md) | 版本变更记录（Keep a Changelog 格式） |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 开发约定 —— **含「改代码必须同步改文档」硬性规则** |
 
 > ⚠️ 改任何东西之前先读 `PROJECT.md`。它建立了几个反直觉的实测结论
@@ -151,7 +153,14 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 ## 部署要点（与官方不同的地方）
 
 **镜像**：不是官方 `difegue/lanraragi`，而是自建镜像（`lrr-custom:v14`，基于
-`tools/build/docker/Dockerfile`）。
+`tools/build/docker/Dockerfile`）。**已发布到 Docker Hub**：
+
+```bash
+docker pull kssku123/lrr-custom:v14     # 或 :latest
+```
+
+> 开箱即用的 compose 见仓库根 [`docker-compose.yml`](docker-compose.yml)，
+> 完整部署说明见 [`DEPLOY.md`](DEPLOY.md)。
 
 **关键环境变量**：
 
@@ -236,76 +245,12 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 
 ---
 
-<details>
-<summary><b>以下为官方 LANraragi 的原始 README</b>（点击展开）</summary>
+---
 
-<!-- 官方原文开始 -->
+## 许可证
 
-[<img src="https://img.shields.io/docker/pulls/difegue/lanraragi.svg">](https://hub.docker.com/r/difegue/lanraragi/)
-[<img src="https://img.shields.io/github/downloads/difegue/lanraragi/total.svg">](https://github.com/Difegue/LANraragi/releases)
-[<img src="https://img.shields.io/github/release/difegue/lanraragi.svg?label=latest%20release">](https://github.com/Difegue/LANraragi/releases/latest)
-[<img src="https://img.shields.io/homebrew/v/lanraragi.svg">](https://formulae.brew.sh/formula/lanraragi)  
-[<img src="https://img.shields.io/website/https/lrr.tvc-16.science.svg?label=demo%20website&up_message=online">](https://lrr.tvc-16.science/)
-[<img src="https://github.com/Difegue/LANraragi/actions/workflows/push-continuous-integration.yml/badge.svg">](https://github.com/Difegue/LANraragi/actions)
-[<img src="https://img.shields.io/discord/612709831744290847">](https://discord.gg/aRQxtbg)
+本项目遵循上游的 **MIT License**，见 [`LICENSE`](LICENSE)（版权归原作者
+[Difegue](https://github.com/Difegue) 所有，fork 改动同样以 MIT 发布）。
 
-<img src="public/favicon.ico" width="128">  
-  
-LANraragi
-===========
+上游项目：[Difegue/LANraragi](https://github.com/Difegue/LANraragi)
 
-Open source server for archival of comics/manga, running on Mojolicious + Redis.
-
-#### 💬 Talk with other fellow LANraragi Users on [Discord](https://discord.gg/aRQxtbg) or [GitHub Discussions](https://github.com/Difegue/LANraragi/discussions)  
-
-#### [📄 Documentation](https://sugoi.gitbook.io/lanraragi/v/dev) | [⏬ Download](https://github.com/Difegue/LANraragi/releases/latest) | [🎞 Demo](https://lrr.tvc-16.science) | [🪟🌃 Windows Nightlies](https://nightly.link/Difegue/LANraragi/workflows/push-continous-delivery/dev) | [💵 Sponsor Development](https://ko-fi.com/T6T2UP5N)  | [🉐 Buy Stickers!](https://ko-fi.com/s/9e8cf6a479)
-
-<a href="https://hosted.weblate.org/engage/lanraragi/">
-<img src="https://hosted.weblate.org/widget/lanraragi/multi-auto.svg" alt="Translation status" />
-</a>  
-
-<sub>LANraragi uses Weblate for translation hosting.</sub>  
-
-## Screenshots  
-
-|Main Page, Thumbnail View | Main Page, List View |
-|---|---|
-| [![archive_thumb](./tools/Documentation/.gitbook/assets/archive_thumb.png)](https://raw.githubusercontent.com/Difegue/LANraragi/dev/tools/Documentation/.gitbook/assets/archive_thumb.png) | [![archive_list](./tools/Documentation/.gitbook/assets/archive_list.png)](https://raw.githubusercontent.com/Difegue/LANraragi/dev/tools/Documentation/.gitbook/assets/archive_list.png) |
-
-|Archive Reader | Reader with overlay |
-|---|---|
-| [![reader](./tools/Documentation/.gitbook/assets/reader.jpg)](https://raw.githubusercontent.com/Difegue/LANraragi/dev/tools/Documentation/.gitbook/assets/reader.jpg) | [![reader_overlay](./tools/Documentation/.gitbook/assets/reader_overlay.jpg)](https://raw.githubusercontent.com/Difegue/LANraragi/dev/tools/Documentation/.gitbook/assets/reader_overlay.jpg) |
-
-|Configuration | Plugin Configuration |
-|---|---|
-| [![cfg](./tools/Documentation/.gitbook/assets/cfg.png)](https://raw.githubusercontent.com/Difegue/LANraragi/dev/tools/Documentation/.gitbook/assets/cfg.png) | [![cfg_plugin](./tools/Documentation/.gitbook/assets/cfg_plugin.png)](https://raw.githubusercontent.com/Difegue/LANraragi/dev/tools/Documentation/.gitbook/assets/cfg_plugin.png) |
-
-## Features  
-
-* Stores your comics in archive format. (zip/rar/targz/lzma/7z/xz/cbz/cbr/cbw/pdf supported, barebones support for epub)  
-
-* Read archives directly from your web browser: the server reads from within compressed files using temporary folders.
-
-* Read your archives in dedicated reader software using the built-in OPDS Catalog (now with PSE support!)
-
-* Use the Client API to interact with LANraragi from other programs (Available for [many platforms!](https://sugoi.gitbook.io/lanraragi/v/dev/advanced-usage/external-readers))
-
-* Two different user interfaces : compact archive list with thumbnails-on-hover, or thumbnail view.
-
-* Localized interface with 11 languages.  
-
-* Choose from 5 preinstalled responsive library styles, or add your own with CSS.  
-
-* Add various types of metadata to archives: Full Tag support with Namespaces, Summaries, Chapters, per-page Overlays.
-
-* Store archives in Categories and/or Tankoubons to sort your Library easily
-
-* Import metadata using Plugins automatically when archives are added to LANraragi.
-
-* Download archives from the Internet directly to the server, while using the aforementioned automatic metadata import
-
-* Scan for duplicates within your saved archives
-
-* Backup your database as JSON to carry your tags over to another LANraragi instance.
-
-</details>
