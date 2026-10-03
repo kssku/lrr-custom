@@ -83,7 +83,6 @@ lrr-custom/
 │       ├── Plugin/         ← 插件（含 Scripts/）
 │       └── Utils/          ← 工具层（★ Database.pm 含 ID 算法与 arcids_idx）
 ├── script/                 ← 运维与迁移脚本（见 §7）
-├── patch-badimage/         ← 坏图/坏缩略图熔断补丁（⚠️ 从未应用，见 §9.3.1）
 ├── DEPLOY.md               ← 部署手册：交付物、挂载、首次启动、索引
 ├── public/js/              ← 前端（batch.js / category.js 分页改造）
 ├── templates/ + locales/   ← 模板与 i18n（新增词条必须同步 .po）
@@ -355,10 +354,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 |---|---|
 | `verify_arcids.pl` | **`arcids_idx` 一致性自检**。查四项：集合双向差集、score 唯一性、score 连续性、计数器与最大 score 一致。`--fix` 只修集合成员，**刻意不重编号**。用 `SCAN` 不用 `KEYS` |
 | `migrate_arcids.pl` | 从既有 db0 构建 `arcids_idx`。**幂等**，支持 `--dry-run` |
-| `bench_arcids.pl` | `arcids_idx` 读写基准 |
-| `bench_http.pl` | HTTP 接口基准 |
-| `ingest_batched.pl` | **批量入库模块**（当前主力）|
-| `ingest_files.pl` | 旧版入库脚本 |
+| `ingest_batched.pl` | **批量入库的 CLI 入口**。核心逻辑在 `lib/LANraragi/Utils/Ingest.pm`（`ingest_batched()` 函数，由 `Shinobu.pm` 自动调用）；本脚本是它的人工封装，用于自动流程卡住时**手动、限量、可中断**地跑一次（`--dry-run` / `--limit` / `--no-cursor`）|
 | `check_plugin_loads.pl` | 插件加载自检 |
 | `launcher.pl` | 容器入口 |
 | `lanraragi` / `get_version` / `backup` | 启动与版本工具 |
@@ -457,13 +453,21 @@ OPDS 目录每页每项都要付一次。
 `Model/Tankoubon.pm` 缩略图、`Utils/Registry.pm` 插件文件等）**均非归档热路径**，不构成瓶颈。
 `Utils/Database.pm:462`（`clean_database` 内）**必须** stat —— 那正是它的职责。
 
-### 9.3 已清理文件（2026-09-26 删除）
+### 9.3 已清理文件
 
-| 文件 | 理由 |
-|---|---|
-| `script/ingest_files.pl` | 全仓无引用，已被 `ingest_batched.pl` 取代 |
-| `patch-badimage/apply.sh` | 已失效，被 `apply2.pl` 覆盖 |
-| `patch-thumbfail/thumbfail.patch.pl` | 用 `docker exec` 改镜像内路径，违背 override 思路，与 `apply3.pl` 重叠 |
+| 文件 | 删除时间 | 理由 |
+|---|---|---|
+| `script/ingest_files.pl` | 2026-09-26 | 全仓无引用，已被 `ingest_batched.pl` 取代 |
+| `patch-badimage/apply.sh` | 2026-09-26 | 已失效，被 `apply2.pl` 覆盖 |
+| `patch-thumbfail/thumbfail.patch.pl` | 2026-09-26 | 用 `docker exec` 改镜像内路径，违背 override 思路，与 `apply3.pl` 重叠 |
+| `patch-badimage/apply2.pl` | 2026-10-04 | 针对旧部署路径 `/opt/data/lanraragi/patched/`（已不存在），从未生效；功能已被 `48ff6caf` 正式代码取代 |
+| `patch-badimage/apply3.pl` | 2026-10-04 | 同上；且其熔断器只有「读」没有「写」 |
+| `patch-badimage/verify-badthumb.pl` | 2026-10-04 | 同目录下的验证脚本，随目录一并删除 |
+| `script/bench_arcids.pl` | 2026-10-04 | 一次性基准测试，全仓无调用点（仅文档表格提及）|
+| `script/bench_http.pl` | 2026-10-04 | 同上 |
+
+> **保留** `script/verify_arcids.pl` —— 它是 `arcids_idx` 漂移时**唯一**的诊断手段（见 §7 的陷阱警告）。
+> **保留** `script/ingest_batched.pl` —— 它是 `Ingest.pm` 的人工 CLI 入口，不是遗留代码（见 §7）。
 
 ### 9.3.1 坏图/缩略图防护（2026-10-03 已固化为正式代码）
 
@@ -486,7 +490,10 @@ OPDS 目录每页每项都要付一次。
 
 **排查**：`docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'`
 
-> `patch-badimage/` 下脚本保留作为历史参考，但**不再是生效路径** —— 生效的是上述正式代码。
+> `patch-badimage/` 目录**已于 2026-10-04 整体删除**（`apply2.pl` / `apply3.pl` / `verify-badthumb.pl`）。
+> 删除它**不等于**抹掉这段教训 —— 生效的是上述正式代码，而下面这条「为什么不能靠补丁脚本改行为」的结论必须保留：
+> 补丁脚本针对镜像内路径、绕过构建产物、无版本约束，改完**无人知道是否真的生效**；
+> 上面那两个脚本就这样静默失效了数月。**要改行为，就改仓库里的代码，再重建镜像。**
 > 详见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) §10、§11。
 
 ### 9.3.2 移除 MCE + 只生成封面（2026-10-03，提交 `338434b2`）

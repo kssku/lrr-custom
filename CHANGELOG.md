@@ -40,6 +40,18 @@
 - `CHANGELOG.md`：本文件。
 - `DEPLOY.md` §8：已发布镜像与代理依赖（Docker Hub 拉取/发布、mihomo 代理配置）。
 
+### 移除
+- **清理死代码与一次性工具**（5 个文件，约 9KB）：
+  - `patch-badimage/`（`apply2.pl` / `apply3.pl` / `verify-badthumb.pl`）——
+    针对旧部署路径 `/opt/data/lanraragi/patched/`（已不存在），**从未真正生效**；
+    功能已由提交 `48ff6caf` 固化为正式代码（见 `PROJECT.md` §9.3.1）。
+    删除**文件**，但在 `PROJECT.md` / `FORK_CHANGES.md` **保留这段教训记载**——
+    「补丁脚本静默失效数月」是真实的坑，删掉记载等于允许重新踩。
+  - `script/bench_arcids.pl` / `script/bench_http.pl` —— 一次性基准测试，
+    全仓无调用点（仅被文档表格提及）。
+- **保留** `script/verify_arcids.pl`（`arcids_idx` 漂移的唯一诊断手段）
+  与 `script/ingest_batched.pl`（`Ingest.pm` 的人工 CLI 入口，非遗留代码）。
+
 ### 文档
 - `README.md` 标准化：移除内嵌的**上游 README 折叠块**（上游有自己的 README，
   重复且随版本漂移），补文档导航表与许可证段落。

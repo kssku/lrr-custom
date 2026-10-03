@@ -97,7 +97,7 @@
 - 新增 `arcids_idx`（db0）作为分页索引，**单调递增 score，永不复用** → 翻页顺序稳定
 - `add_archive_to_redis` / `delete_archive` / `change_archive_id` 三者同步维护该索引
 - **索引缺失时自动回退 `KEYS` 并就地重建索引** → 全新部署自愈，无需手工迁移
-- 新增脚本：`script/migrate_arcids.pl`（幂等，支持 dry-run）、`script/bench_arcids.pl`、`script/bench_http.pl`
+- 新增脚本：`script/migrate_arcids.pl`（幂等，支持 dry-run）、`script/verify_arcids.pl`（一致性自检）
 - `public/js/batch.js` 改为逐页拉取 `?start=N`
 
 > **重要约束**：索引**不能**命名为 `LRR_*` 前缀 —— Minion 会 MOVE-drain 该前缀的键。
@@ -616,8 +616,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 |---|---|
 | `script/migrate_arcids.pl` | 构建 `arcids_idx`（幂等，支持 dry-run）|
 | `script/verify_arcids.pl` | 索引一致性自检（支持 `--fix`）|
-| `script/bench_arcids.pl` | 索引性能基准 |
-| `script/bench_http.pl` | HTTP 分页性能基准 |
+| `script/ingest_batched.pl` | 批量入库的人工 CLI 入口（核心逻辑在 `Utils/Ingest.pm`）|
 
 ---
 
