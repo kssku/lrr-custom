@@ -367,9 +367,16 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 
 ---
 
-## 8. 与上游同步
+## 8. 与上游的关系：独立维护
 
-本 fork 基于官方 `dev` 分支。**merge 上游时以下文件有本地改动，必须逐行比对**：
+**本 fork 自 2026-10-03 起独立维护，不再 merge 官方上游。** 仓库未配置 `upstream`
+remote，远程只有 `origin`（`kssku/lrr-custom`），历史为单根，与官方已无合并关系。
+
+改动只在本仓库内演进；上游的新特性**不自动流入**，如需某个上游修复，**手工挑选后
+单独提交**，并按下表逐行确认本地改动未被冲掉。
+
+下表是本 fork 与官方 `dev` 分叉点的**全部差异文件** —— 保留作为「本地改了什么」的
+索引，而非合并清单：
 
 | 文件 | 改动 |
 |---|---|
@@ -384,9 +391,9 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | `lib/LANraragi/Model/Plugins.pm` | 缩略图懒生成守卫 |
 | `tools/build/docker/Dockerfile` | 预建 `perl5` 目录（属主 `koyomi`）|
 
-**最高危两项**：
-- **`compute_id`** —— 上游若覆盖它，全库 ID 全部失效。
-- **`Shinobu.pm`** —— 上游若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
+**最高危两项**（若将来手工引入上游代码，先看这里）：
+- **`compute_id`** —— 被上游实现覆盖则全库 ID 全部失效。
+- **`Shinobu.pm`** —— 若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
 
 ---
 

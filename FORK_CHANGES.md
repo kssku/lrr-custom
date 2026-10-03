@@ -536,10 +536,12 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 
 ---
 
-## 与官方上游的同步策略
+## 与官方上游的关系：独立维护
 
-- 本 fork 基于官方 `dev` 分支，定期 merge 上游
-- 同步上游时**必须比对**以下文件（本 fork 有改动）：
+- **本 fork 自 2026-10-03 起独立维护，不再 merge 官方上游** —— 未配置 `upstream`
+  remote，历史为单根，与官方已无合并关系
+- 上游新特性**不自动流入**；确需某个上游修复时**手工挑选、单独提交**
+- 以下文件是本 fork 相对上游分叉点的全部改动，用于确认「本地改了什么」：
   - `lib/LANraragi/Utils/Database.pm` ← `compute_id` + `arcids_idx`
   - `lib/LANraragi.pm` ← `LRR_DISABLE_SHINOBU` + 禁用自动重建
   - `lib/LANraragi/Model/Search.pm` ← 缓存软失效 + `KEYS`→`SCAN`
@@ -548,7 +550,8 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
   - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
   - `public/js/mod/common.js` ← 去掉 `no_fallback=true`
   - `public/js/mod/index_datatables.js` ← 去掉 `no_fallback=true`
-- 升级镜像后，用 `git diff` 逐个比对上述文件（**不要**再依赖已废弃的 `override/` 机制）
+- 手工引入上游代码后，用 `git diff` 逐个比对上述文件是否被覆盖
+  （**不要**再依赖已废弃的 `override/` 机制）
 
 ---
 

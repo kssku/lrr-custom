@@ -2,6 +2,7 @@
 
 > **本仓库是 [Difegue/LANraragi](https://github.com/Difegue/LANraragi) 的个人 fork**，
 > 面向「**超大归档库 + 网盘 FUSE 远程存储**」场景做了深度性能改造。
+> **自 2026-10-03 起独立维护，不再 merge 官方上游**（未配置 `upstream` remote）。
 > 上游原始内容（徽章、截图、特性列表）保留在下方。
 
 ## 📖 项目文档导航
@@ -9,7 +10,7 @@
 | 文档 | 内容 |
 |---|---|
 | **[`PROJECT.md`](PROJECT.md)** | **唯一权威总纲** —— 架构 / 数据流 / 部署 / 运维 / 性能基线 / 技术债 / 待办 |
-| [`FORK_CHANGES.md`](FORK_CHANGES.md) | 相对官方上游的**全部改动**（PROJECT.md §5 的展开细节） |
+| [`FORK_CHANGES.md`](FORK_CHANGES.md) | 相对官方上游的**全部改动**（PROJECT.md §5 的展开细节；本项目独立维护） |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 开发约定 —— **含「改代码必须同步改文档」硬性规则** |
 
 > ⚠️ 改任何东西之前先读 `PROJECT.md`。它建立了几个反直觉的实测结论
@@ -192,9 +193,13 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 
 ---
 
-## 与上游同步时必看
+## 与上游的关系：独立维护
 
-本 fork 基于官方 `dev` 分支。**merge 上游时，以下文件有本地改动，必须逐行比对**：
+**本 fork 自 2026-10-03 起独立维护，不再 merge 官方上游。** 远程只有
+`origin`（`kssku/lrr-custom`），未配置 `upstream`，历史为单根。
+
+上游新特性**不自动流入**；确需某个上游修复时**手工挑选、单独提交**。
+以下文件是本 fork 相对上游分叉点的全部改动，用于确认本地改了什么：
 
 - `lib/LANraragi/Utils/Database.pm` ← `compute_id` + `arcids_idx`
 - `lib/LANraragi.pm` ← `LRR_DISABLE_SHINOBU` + 禁用自动重建索引
@@ -207,9 +212,9 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 - `lib/LANraragi/Model/Plugins.pm` ← **缩略图懒生成守卫**
 - `tools/build/docker/Dockerfile` ← **预建 `perl5` 目录（属主 koyomi）**
 
-**特别是 `compute_id`** —— 如果上游改动覆盖了它，全库 ID 会全部失效。
+**特别是 `compute_id`** —— 被上游实现覆盖则全库 ID 会全部失效。
 
-**特别是 `Shinobu.pm`** —— 上游若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
+**特别是 `Shinobu.pm`** —— 若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
 
 ---
 
