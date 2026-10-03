@@ -54,7 +54,9 @@ LANraragi（LRR）的个人 fork。上游 [Difegue/LANraragi](https://github.com
 
 本 fork 的全部改动，都是为了在这五个点上把「读内容」换成「读路径」、把「全扫」换成「按索引取」。
 
-- **版本基线**：`0.9.81 Atomica`（见 `package.json`）
+- **上游基线**：`0.9.81 Atomica`（本 fork 自此版本分叉）
+- **本 fork 标识**：`Speed of Life`（`version_name`，见 `package.json`）
+  - ⚠️ `version` 字段**必须保持 `0.9.81`**：前端静态资源路由 `/js/:version/*` 以 `\d+\.\d+\.\d+` 严格匹配（`lib/LANraragi/Utils/Routing.pm:74`），改成非三段数字会让 vendor 资源全部 404
 - **上游基线 commit**：`db310690`
 - **本 fork 提交数**：15（自 `8370bf83` 起）
 - **当前分支**：`feature/path-hash-id`

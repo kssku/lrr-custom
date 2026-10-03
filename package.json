@@ -1,8 +1,8 @@
 {
     "name": "lanraragi",
     "version": "0.9.81",
-    "version_name": "Atomica",
-    "description": "I'm under Japanese influence and my honor's at stake!",
+    "version_name": "Speed of Life",
+    "description": "Same library, fewer file reads. (fork of LANraragi 0.9.81 Atomica)",
     "devEngines": {
         "runtime": {
             "name": "node"

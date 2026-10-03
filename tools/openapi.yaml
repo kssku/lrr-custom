@@ -4895,8 +4895,8 @@ components:
         excluded_namespaces:
           - source
           - date_added
-        version_desc: I'm under Japanese influence and my honor's at stake!
-        version_name: Law (Earthlings On Fire)
+        version_desc: Same library, fewer file reads. (fork of LANraragi 0.9.81 Atomica)
+        version_name: Speed of Life
     PluginInfo:
       type: object
       description: Metadata payload for a LRR Plugin.

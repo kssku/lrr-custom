@@ -4,10 +4,19 @@
 相对自身的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 > 上游基线版本：**0.9.81 (Atomica)**。
+> 本 fork 标识：**Speed of Life**（`package.json` 的 `version_name`，取自 Bowie《Low》1977 开篇曲，
+> 延续上游以 Bowie 作品命名版本代号的传统）。
 > 本 fork 自 2026-10-03 起**独立维护**，不再 merge 上游；上游改动不自动流入。
 > 相对上游的**逐条技术差异**见 [`FORK_CHANGES.md`](FORK_CHANGES.md)。
 
 ## [Unreleased]
+
+### 新增
+- **独立版本标识**：`package.json` 的 `version_name` 由 `Atomica` 改为 `Speed of Life`，
+  `description` 改为本 fork 自己的标语；`tools/openapi.yaml` 的示例值同步。
+  `version` **保持 `0.9.81` 不变** —— 它被前端静态资源路由 `/js/:version/*`
+  以 `\d+\.\d+\.\d+` 严格匹配（`lib/LANraragi/Utils/Routing.pm:74`），
+  任何非「数字.数字.数字」的写法都会让 vendor 资源 404（已实测 `0.9.81+kssku` / `0.9.81-kssku` 均 404）。
 
 ### 修复
 - **扫描断点写到只读挂载**：`ingest_cursor.json` 此前拼在 `LRR_DATA_DIRECTORY`
