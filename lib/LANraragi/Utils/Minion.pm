@@ -9,8 +9,6 @@ use File::Path qw(make_path);
 use File::Temp qw(tempdir);
 use Mojo::JSON qw(encode_json);
 use Mojo::UserAgent;
-use MCE::Loop;
-use MCE::Shared;
 use Config;
 
 use LANraragi::Utils::Generic    qw(exec_with_lock_pure);
@@ -148,7 +146,14 @@ sub add_tasks {
             my $format    = $use_jxl ? 'jxl' : 'jpg';
             my $subfolder = substr( $id, 0, 2 );
 
-            my $errors = MCE::Shared->array;
+            # CUSTOM FIX (fork): MCE replaced with a plain array + sequential loop.
+            # In this fork's Minion job child, MCE::Shared's manager never finished
+            # its handshake: the child froze with wchan=0 and ~40 anonymous socket
+            # fds, utime stuck at 0.16s, so no page was rendered and the job stayed
+            # 'active' forever, wedging its worker. Isolated MCE scripts ran fine,
+            # so the failure is specific to MCE inside a Minion job child.
+            # Sequential is slower, but the bottleneck here is the remote FUSE read.
+            my @errors = ();
 
             # CUSTOM FORK (feature/path-only-shinobu): page 0 (the cover) MUST be
             # generated here, alongside the page thumbnails.
@@ -172,7 +177,7 @@ sub add_tasks {
                 eval { $covername = extract_thumbnail( $thumbdir, $id, 0, 1, 1 ); };
                 if ($@) {
                     $logger->warn("Error while generating cover thumbnail: $@");
-                    $errors->push($@);
+                    push @errors, $@;
                 }
             }
 
@@ -194,7 +199,7 @@ sub add_tasks {
                         eval { $thumbname = extract_thumbnail( $thumbdir, $id, $i, 0, $use_hq ); };
                         if ($@) {
                             $logger->warn("Error while generating thumbnail: $@");
-                            $errors->push($@);
+                            push @errors, $@;
                         }
                     }
 
@@ -205,29 +210,19 @@ sub add_tasks {
             };
 
             eval {
-                if (IS_UNIX) {
-                    mce_loop {
-                        $sub->( @{$_} );
-                    }
-                    \@keys;
-                    MCE::Loop->finish;
-                } else {
-
-                    # libarchive does not support threading on Windows
-                    $sub->(@keys);
-                }
+                # CUSTOM FIX (fork): sequential on every platform. The IS_UNIX
+                # mce_loop branch is gone because MCE::Shared's manager never
+                # completed its handshake inside a Minion job child, so the job
+                # hung in 'active' with a frozen utime and zero page files.
+                # See the note where @errors is declared.
+                $sub->(@keys);
             };
 
             $redis->hdel( $id, "thumbjob" );
             $redis->quit;
 
-            my @err = $errors->values;
+            my @err = @errors;
             $job->finish( { errors => \@err } );
-
-            # Crashes on Windows so don't run it there
-            if (IS_UNIX) {
-                MCE::Shared->stop;
-            }
         }
     );
 
@@ -245,7 +240,14 @@ sub add_tasks {
             $redis->quit();
 
             $logger->info("Starting thumbnail regen job (force = $force)");
-            my $errors = MCE::Shared->array;
+            # CUSTOM FIX (fork): MCE replaced with a plain array + sequential loop.
+            # In this fork's Minion job child, MCE::Shared's manager never finished
+            # its handshake: the child froze with wchan=0 and ~40 anonymous socket
+            # fds, utime stuck at 0.16s, so no page was rendered and the job stayed
+            # 'active' forever, wedging its worker. Isolated MCE scripts ran fine,
+            # so the failure is specific to MCE inside a Minion job child.
+            # Sequential is slower, but the bottleneck here is the remote FUSE read.
+            my @errors = ();
 
             # Regen thumbnails for errythang if $force = 1, only missing thumbs o therwise
             my $sub = sub {
@@ -266,32 +268,20 @@ sub add_tasks {
 
                         if ($@) {
                             $logger->warn("Error while generating thumbnail: $@");
-                            $errors->push($@);
+                            push @errors, $@;
                         }
                     }
                 }
             };
 
             eval {
-                if (IS_UNIX) {
-                    mce_loop {
-                        $sub->( @{$_} );
-                    }
-                    \@keys;
-                    MCE::Loop->finish;
-                } else {
-
-                    # libarchive does not support threading on Windows
-                    $sub->(@keys);
-                }
+                # CUSTOM FIX (fork): sequential on every platform. See the note
+                # where @errors is declared -- MCE::Shared wedged inside Minion
+                # job children and every page was left unrendered.
+                $sub->(@keys);
             };
 
-            my @err = $errors->values;
-
-            # Crashes on Windows so don't run it there
-            if (IS_UNIX) {
-                MCE::Shared->stop;
-            }
+            my @err = @errors;
 
             # Regen thumbnails for all tankoubons (sequential - fewer items than archives)
             my $redis_tank = LANraragi::Model::Config->get_redis;
@@ -354,9 +344,13 @@ sub add_tasks {
             }
             $redis->quit();
 
-            # Prepare to track visited nodes
-            my $visited = MCE::Shared->hash;
-            my @ids     = keys %thumbhashes;    # List of IDs to check
+            # Prepare to track visited nodes.
+            # CUSTOM FIX (fork): was MCE::Shared->hash. The loop below is now
+            # sequential, so a plain hash is equivalent and drops the last
+            # MCE dependency from the job child. The ->get/->set calls are
+            # rewritten to plain hash accesses in $sub.
+            my %visited;
+            my @ids = keys %thumbhashes;    # List of IDs to check
 
             my $sub = sub {
                 my (@keys) = @_;
@@ -365,22 +359,22 @@ sub add_tasks {
 
                 foreach my $id (@keys) {
 
-                    # Skip if this ID has already been processed in another thread
-                    next if $visited->get($id);
+                    # Skip if this ID has already been processed
+                    next if $visited{$id};
                     my @stack = ($id);
                     my @group;
 
                     while (@stack) {
                         my $node = pop @stack;
-                        next if $visited->get($node);
+                        next if $visited{$node};
 
                         # Mark the node as visited
-                        $visited->set( $node, 1 );
+                        $visited{$node} = 1;
                         push @group, $node;
 
                         # Find all potential duplicates for this node
                         foreach my $other_id ( keys %thumbhashes ) {
-                            next if $node eq $other_id || $visited->get($other_id);
+                            next if $node eq $other_id || $visited{$other_id};
 
                             # Calculate Hamming distance
                             my $distance = 0;
@@ -413,23 +407,13 @@ sub add_tasks {
             };
 
             eval {
-                if (IS_UNIX) {
-                    mce_loop {
-                        $sub->( @{$_} );
-                    }
-                    \@ids;
-                    MCE::Loop->finish;
-                } else {
-                    $sub->(@ids);
-                }
+                # CUSTOM FIX (fork): sequential on every platform. See the note
+                # where @errors is declared in page_thumbnails -- MCE::Shared
+                # wedged inside Minion job children.
+                $sub->(@ids);
             };
 
             $job->finish( {} );
-
-            # Crashes on Windows so don't run it there
-            if (IS_UNIX) {
-                MCE::Shared->stop;
-            }
         }
     );
 
