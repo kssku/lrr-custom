@@ -300,13 +300,31 @@ sub serve_thumbnail {
             );
         } else {
 
-            # If the thumbnail doesn't exist, serve the default thumbnail.
+            # CUSTOM FORK (feature/path-only-shinobu): the placeholder MUST NOT be
+            # cached by the browser.
+            #
+            # The list page requests a cover as /api/archives/<id>/thumbnail with no
+            # cache-busting parameter, so the URL is identical before and after the
+            # thumbnail exists. Without this header the browser applies heuristic
+            # caching to the 200 response and keeps showing noThumb.png even after the
+            # real cover has been generated -- which looks exactly like "the cover
+            # never refreshes after I open an archive".
+            #
+            # Thumbnails are only built when the reader is opened (lazy mode), so this
+            # placeholder is the normal first response for every archive that has not
+            # been read yet.
+            $self->res->headers->add( "Cache-Control" => "no-store, must-revalidate" );
             $self->render_file( filepath => "./public/img/noThumb.png" );
         }
         return;
     } else {
 
-        # Simply serve the thumbnail.
+        # CUSTOM FORK (feature/path-only-shinobu): allow caching, but force
+        # revalidation. A generated cover is stable, yet it can be replaced by
+        # "regenerate all thumbnails" or a user-set custom cover, and the URL never
+        # changes -- so `no-cache` (store but revalidate) rather than a long max-age.
+        # Without it a replaced cover would never show up until a hard refresh.
+        $self->res->headers->add( "Cache-Control" => "no-cache" );
         $self->render_file( filepath => $thumbname );
     }
 }
