@@ -16,7 +16,6 @@ no warnings 'experimental::signatures';
 use local::lib;
 
 use FindBin;
-use MCE::Loop;
 use Storable   qw(lock_store);
 use Mojo::JSON qw(to_json);
 use Config;
@@ -420,16 +419,24 @@ sub update_filemap (@roots) {
     $redis->quit();
 
     eval {
-        if ( IS_UNIX ) {
-            # Now that we have all new files, process them...with multithreading!
-            mce_loop {
-                add_new_files(@{ $_ });
-            } \@newfiles;
-            MCE::Loop->finish;
-        } else {
-            # libarchive does not support threading on Windows
-            add_new_files(@newfiles);
-        }
+
+        # CUSTOM FORK (feature/path-only-shinobu): sequential ingest on every
+        # platform. Upstream ran add_new_files() through MCE::Loop on Unix for
+        # speed, but this fork removed every FUSE read from the per-file path
+        # (no get_filelist, no size poll, no thumbnail) -- add_new_files() now
+        # only writes Redis. Two reasons to drop the fan-out:
+        #
+        #   1. Correctness. add_new_files() writes db0 (archive hash, arcids_idx)
+        #      and db3 (INDEX_* / LRR_STATS). Concurrent writers can race on the
+        #      arcids_idx sequence and double-count stats. Serial writes cannot.
+        #   2. Risk. MCE is the exact mechanism that wedged Minion jobs in this
+        #      fork (active jobs, workers spun). It is not needed for throughput
+        #      here: measured Redis writes are ~200us each, so ~2ms per archive.
+        #      A 50k-archive first scan pays ~100s of serial writes -- negligible
+        #      next to the FUSE readdir walk that dominates the same scan.
+        #
+        # Windows already took this path (libarchive has no threading there).
+        add_new_files(@newfiles);
     };
 
     if ($@) {
