@@ -446,15 +446,20 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | 分类页渲染 | **分钟级 / 十几 MB** | 前端分页，**秒级** |
 | 首次搜索 | 数十秒 | **十几秒** |
 | 搜索缓存命中 | 几乎不命中 | **亚秒级** |
-| 启动索引重建 | **十几分钟**且循环重跑 | **禁用**，手动触发（见下方 ⚠️）|
+| 启动索引重建 | **十几分钟**且循环重跑 | **按需触发**：`index-init` 服务仅在 `LAST_JOB_TIME` 缺失时建一次 |
 | ID 跨机器稳定性 | **失效**（含绝对路径）| **稳定**（相对路径）|
 | 浏览列表页 | 每页入队缩略图任务 | **零任务**（占位图）|
 | 坏缩略图 | libvips die → 前端无限重试 → D 状态堆积 | **魔术字节拦截 + 3 次熔断** |
 
-> ⚠️ **「禁用自动重建」的代价**：新部署或重建库后，**必须手动触发一次 `build_stat_hashes`**，
-> 否则 `LAST_JOB_TIME` 不写入、界面显示「共 -1 件瑰宝」。
-> 触发方式见 [`DEPLOY.md`](./DEPLOY.md)（注意：`script/migrate_arcids.pl` **只**管 `arcids_idx`，
-> **不**管 `build_stat_hashes` —— 此前的文档在此处有误导）。
+> ℹ️ **关于启动索引重建**：本 fork 禁用的是**上游那种每次启动都全量重跑**的行为
+> （大库上要十几分钟，且失败会循环重试）。取而代之的是 s6 一次性服务 `index-init`：
+> 仅在 `LAST_JOB_TIME` 缺失时执行一次 `rebuild_stats.pl`，之后每次重启都秒过。
+> 因此新部署**不再需要**手动触发 `build_stat_hashes`，界面也不会再显示「共 -1 件瑰宝」。
+>
+> 注意 `index-init` 只负责写入 `LAST_JOB_TIME`，让 `do_search()` 不再返回 `-1`；
+> 真实索引条目由 Shinobu 入库时实时增量写入，不需要等全量重建完成。
+> 手动重建方式仍见 [`DEPLOY.md`](./DEPLOY.md)（注意：`script/migrate_arcids.pl` **只**管
+> `arcids_idx`，**不**管 `build_stat_hashes` —— 此前的文档在此处有误导）。
 
 ---
 
