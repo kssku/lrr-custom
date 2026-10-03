@@ -217,11 +217,63 @@
 
 ---
 
+### 10. 前端不再主动请求生成缩略图（列表页）
+
+**问题**：`LRR_THUMBNAIL_MODE=lazy` 只关闭了**入库时**的缩略图生成，
+但**浏览列表页**时前端仍会主动要求后端生成 —— 两条路互相独立，环境变量管不到后者。
+
+```
+① 浏览器打开归档列表
+② 前端对当前页每个归档请求：
+   /api/archives/<id>/thumbnail?no_fallback=true
+③ 后端 Model/Archive.pm::serve_thumbnail 看到 no_fallback=true：
+     入队 Minion thumbnail_task → 读 FUSE 网盘 → 调 libvips
+④ 每翻一页，对那一页所有归档重复 ②-③
+```
+
+**后果（FUSE 场景下尤其严重）**：仅**浏览列表**就会对远程挂载发起大量读取，
+正是本 fork 要消除的开销（`Model/Plugins.pm:242` 注释：
+*"nothing but the reader may touch the remote mount"*）。
+
+**改动**（去掉两处 `?no_fallback=true`）：
+
+| 文件 | 行 | 场景 |
+|---|---|---|
+| `public/js/mod/index_datatables.js` | 218-219 | 表格模式，每行渲染 |
+| `public/js/mod/common.js` | 357-358 | 缩略图卡片模式 |
+
+去掉后后端走 `else` 分支，直接 `render_file ./public/img/noThumb.png`，
+**零 Minion 任务、零网盘读取**。缩略图只在**打开阅读器**时生成。
+
+> `public/js/mod/common.js` 该处**上游原有注释本身就写着**
+> *"Don't enforce no_fallback=true here, we don't want those divs to trigger Minion jobs"*
+> —— 代码与注释矛盾，本次改动**让代码符合其注释的意图**。
+
+> `public/js/mod/edit.js:104` 无需改动：它调用的是裸 `/api/archives/<id>/thumbnail`，本就不触发生成。
+
+**生效方式**：前端文件在 `Dockerfile:128` 被 `COPY /public public` 烤进镜像，
+`public/` **不在 compose 挂载表中** —— 改完必须**重建镜像**才生效。
+
+---
+
 ## (B) 部署层面的改动（不在 Git 中）
 
 ### 1. 镜像
 
-**不是**官方 `difegue/lanraragi`。基于官方代码 + 上述提交构建（本机无 Dockerfile，构建环境在别处）。
+**不是**官方 `difegue/lanraragi`，而是自建镜像 **`lrr-custom:v3`**。
+
+**构建方式（2026-10-03 核实，此前文档说「本机无 Dockerfile」已过时）**：
+
+```bash
+cd <仓库根>
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
+```
+
+- `tools/build/docker/Dockerfile` **存在于仓库**（136 行，多阶段构建：`base` → `build` → `runtime`）
+- `Dockerfile:128` 的 `COPY /public public` 是**前端文件烤进镜像**的位置 ——
+  改 `public/js/**` 后**必须重建镜像**才生效（`public/` 不在 compose 挂载表中）
+- `Dockerfile:106` 有 fork 专属修复：预建 `/home/koyomi/perl5` 并 `chown koyomi`，
+  避免 local::lib 以 uid 9001 启动时无法创建 `perl5/bin`
 
 ### 2. 环境变量
 
@@ -276,13 +328,27 @@
 
 > 注：官方上游 `01-lrr-setup` 默认对 `content/` 递归 `chmod`（`LRR_AUTOFIX_PERMISSIONS=1`），在 30 万文件 + 慢 FUSE 上会让容器启动卡住很久。大库部署建议设 `LRR_AUTOFIX_PERMISSIONS=0`。
 
-### 4. override 补丁机制
+### 4. override 补丁机制 —— ⚠️ 已废弃
 
-**为什么需要**：镜像代码是烤死的（无 Dockerfile），`docker exec` 改文件会在容器重建时丢失。
+> **自镜像 `lrr-custom:v3` 起，本机制不再使用。** 修复已全部进镜像源码。
+> 本节保留作为历史记录，**新部署不要启用**。
 
-**做法**：单个文件 bind mount（`:ro`），覆盖容器内 `lib/LANraragi/Utils/Database.pm`。
+**当年为什么需要**：早期镜像代码是烤死的（当时仓库无 Dockerfile），`docker exec` 改文件会在容器重建时丢失。
 
-**注意**：宿主 `override/` 下另有若干 `.pm`，**内容与镜像内一致且未挂载** —— 改它们不生效。
+**当年做法**：单个文件 bind mount（`:ro`），覆盖容器内 `lib/LANraragi/Utils/Database.pm`。
+
+**现在的事实（2026-10-03 核验）**：
+
+| 检查项 | 结果 |
+|---|---|
+| compose 挂载表引用 override | ❌ 无 |
+| `tools/build/docker/Dockerfile` 引用 override | ❌ 无 |
+| 仓库内 `override/` 目录 | ❌ 不存在 |
+| `/vol1/1000/docker/lrr/override/Database.pm` | 存在，但**无任何路径引用它** —— 孤儿文件 |
+| 该文件内容 | **过时**：缺 `5ee7f7f0`（`arcids_idx` 按需重建）的 63 行代码，`CUSTOM FORK` 标记 9 处 vs 仓库 10 处 |
+
+**结论**：`override/Database.pm` 既不生效、内容也已落后于仓库版本。
+交付物中**不包含** `override/`，避免使用者误以为改动它会生效。
 
 ### 5. Redis 库分工（排查时必看）
 
@@ -317,8 +383,14 @@
 | 分类页渲染 | **分钟级 / 十几 MB** | 前端分页，**秒级** |
 | 首次搜索 | 数十秒 | **十几秒** |
 | 搜索缓存命中 | 几乎不命中 | **亚秒级** |
-| 启动索引重建 | **十几分钟**且循环重跑 | **禁用**，手动触发 |
+| 启动索引重建 | **十几分钟**且循环重跑 | **禁用**，手动触发（见下方 ⚠️）|
 | ID 跨机器稳定性 | **失效**（含绝对路径）| **稳定**（相对路径）|
+| 浏览列表页 | 每页入队缩略图任务 | **零任务**（占位图）|
+
+> ⚠️ **「禁用自动重建」的代价**：新部署或重建库后，**必须手动触发一次 `build_stat_hashes`**，
+> 否则 `LAST_JOB_TIME` 不写入、界面显示「共 -1 件瑰宝」。
+> 触发方式见 [`DEPLOY.md`](./DEPLOY.md)（注意：`script/migrate_arcids.pl` **只**管 `arcids_idx`，
+> **不**管 `build_stat_hashes` —— 此前的文档在此处有误导）。
 
 ---
 
@@ -332,7 +404,9 @@
   - `lib/LANraragi/Model/Archive.pm` ← 分页下推
   - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
   - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
-- 升级镜像后，用 `override/Utils/Database.pm` 与镜像内官方原版逐行比对
+  - `public/js/mod/common.js` ← 去掉 `no_fallback=true`
+  - `public/js/mod/index_datatables.js` ← 去掉 `no_fallback=true`
+- 升级镜像后，用 `git diff` 逐个比对上述文件（**不要**再依赖已废弃的 `override/` 机制）
 
 ---
 

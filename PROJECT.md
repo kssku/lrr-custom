@@ -17,9 +17,21 @@
 | 实测数据 | 性能数字必须标注测量环境与样本量，禁止写"约""很快"这类无锚点描述 |
 
 **相关文档**：
-[`README.md`](./README.md)（面向使用者的介绍与部署要点）·
+[`DEPLOY.md`](./DEPLOY.md)（**部署手册：交付物、挂载、首次启动、索引**）·
+[`README.md`](./README.md)（面向使用者的介绍）·
 [`FORK_CHANGES.md`](./FORK_CHANGES.md)（逐提交的改动清单与实测数据）·
 [`CONTRIBUTING.md`](./CONTRIBUTING.md)（提交规范）
+
+**文档分工**（避免重复与漂移）：
+
+| 文档 | 回答什么问题 | 面向谁 |
+|---|---|---|
+| `PROJECT.md`（本文） | **为什么这么改**、架构与事实 | 维护者 / 下一次会话的 AI |
+| `DEPLOY.md` | **怎么把它跑起来** | 拿到镜像的人 |
+| `FORK_CHANGES.md` | **相对上游改了什么** | 对照上游、评估合并冲突 |
+| `README.md` | 这是什么项目 | 初次接触者 |
+
+> 修改任一文档前，先确认内容**归属**哪一份；跨文档重复是漂移的源头。
 
 ---
 
@@ -69,8 +81,8 @@ lrr-custom/
 │       ├── Plugin/         ← 插件（含 Scripts/）
 │       └── Utils/          ← 工具层（★ Database.pm 含 ID 算法与 arcids_idx）
 ├── script/                 ← 运维与迁移脚本（见 §7）
-├── patch-badimage/         ← 坏图/坏缩略图熔断补丁
-├── patch-thumbfail/        ← 缩略图失败补丁
+├── patch-badimage/         ← 坏图/坏缩略图熔断补丁（⚠️ 从未应用，见 §9.3.1）
+├── DEPLOY.md               ← 部署手册：交付物、挂载、首次启动、索引
 ├── public/js/              ← 前端（batch.js / category.js 分页改造）
 ├── templates/ + locales/   ← 模板与 i18n（新增词条必须同步 .po）
 └── tools/build/docker/     ← 自建镜像的 Dockerfile 与 s6 启动脚本
@@ -219,6 +231,25 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 >
 > **override 补丁机制（bind mount 单文件覆盖）自 v3 起已废弃** —— 修复已进镜像。
 > 该机制仅作为历史记录保留在 `FORK_CHANGES.md`。
+>
+> ⚠️ **2026-10-03 核实**：宿主 `docker/lrr/override/Database.pm`（28425 字节）
+> 是 `5ee7f7f0` **之前**的旧快照（mtime `02:13`，缺「按需重建 `arcids_idx`」代码），
+> 且 **compose / Dockerfile / 仓库三处均无引用** —— 它是**孤儿文件，不生效**。
+> 当前权威版本是仓库 `lib/LANraragi/Utils/Database.pm`（30240 字节）。
+
+### 5.1.1 交付形态（2026-10-03 确立）
+
+**交付物 = Docker 镜像 + compose 文件。用户挂载几个目录即可用。**
+
+| 项 | 是否随交付 | 说明 |
+|---|---|---|
+| 定制代码（`lib/`、`public/`） | ✅ 烤进镜像 | 靠 Dockerfile `COPY` |
+| 自制插件 | ❌ **用户自备** | 放 `sideloaded/` 挂载目录 |
+| 元数据索引 / SQLite 库 | ❌ **用户自备** | 由用户插件或官方方式生成，额外只读挂载 |
+| Redis RDB | ❌ **运行时生成** | 入库产生，用户侧持久化 |
+
+**首次部署必须手动跑一次 `build_stat_hashes`**，否则界面显示「共 -1 件瑰宝」。
+完整操作步骤见 [`DEPLOY.md`](DEPLOY.md)。
 
 ### 5.2 网盘挂载
 
@@ -422,6 +453,42 @@ OPDS 目录每页每项都要付一次。
 | `script/ingest_files.pl` | 全仓无引用，已被 `ingest_batched.pl` 取代 |
 | `patch-badimage/apply.sh` | 已失效，被 `apply2.pl` 覆盖 |
 | `patch-thumbfail/thumbfail.patch.pl` | 用 `docker exec` 改镜像内路径，违背 override 思路，与 `apply3.pl` 重叠 |
+
+### 9.3.1 ⚠️ 坏图/缩略图补丁从未应用（2026-10-03 核实）
+
+`patch-badimage/` 下的两个补丁脚本**存在，但从未执行过** —— 仓库与镜像中均无其标记：
+
+| 脚本 | 目标 | 标记 | 仓库 | 镜像 |
+|---|---|---|---|---|
+| `apply2.pl` | `Utils/Archive.pm` | `is_decodable_image` | ❌ 0 | ❌ 0 |
+| `apply3.pl` | `Model/Archive.pm` | `thumbfail:` | ❌ 0 | ❌ 0 |
+
+**文件大小逐字节相同**（`20704` / `17367`），确认补丁未被应用。
+
+**后果**：坏图防护**当前完全不存在**。完整风险链：
+
+```
+前端请求缩略图 → 后端入队 Minion 任务 → 打开 CBZ 读 CD2 → vips 处理坏图
+   → 任务失败 → 前端重试 → 再次入队 → D 状态进程堆积 → 容器被拖垮
+```
+
+**两个补丁各自的问题**：
+
+- **`apply2.pl`**（坏图魔术字节拦截）：逻辑完整可用，但**路径写死**
+  `/opt/data/lanraragi/patched/...`（该目录**已不存在**），不能直接执行，需手工套用逻辑。
+- **`apply3.pl`**（缩略图熔断器）：**半成品** —— 它只**读** `thumbfail:$id`，
+  **全仓库无任何地方写这个计数**（注释称「由 `Model/Minion.pm` 维护」，
+  但该文件不存在，真实路径是 `Utils/Minion.pm`，且其中也无写入代码）。
+  **即使打上去也是死代码** —— 计数恒为 0，熔断永不触发。
+
+**修复需要四处改动**（尚未实施）：
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `public/js/mod/common.js`<br>`public/js/mod/index_datatables.js` | 去掉 `?no_fallback=true` ✅ **已完成（2026-10-03）** |
+| 2 | `lib/LANraragi/Utils/Archive.pm` | 加 `is_decodable_image` + `generate_thumbnail` 拦截 |
+| 3 | `lib/LANraragi/Utils/Minion.pm` | 失败 `INCR thumbfail:$id`，成功 `DEL` |
+| 4 | `lib/LANraragi/Model/Archive.pm` | `serve_thumbnail` 读计数，`>= 3` 返回占位图 |
 
 ### 9.4 可选后续
 
