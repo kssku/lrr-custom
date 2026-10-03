@@ -1,0 +1,15 @@
+#!/bin/sh
+# Build the search index (db3) on first boot.
+#
+# Why: LANraragi::Model::Search::do_search() returns (-1,-1,()) whenever
+# LAST_JOB_TIME is missing, so a fresh deployment shows "共 -1 件" and a
+# carousel error until the index exists. LAST_JOB_TIME is written only by
+# build_stat_hashes(), which in this fork has no automatic trigger -- so
+# without this service every new deployment needs a manual step.
+#
+# Runs once per container start, but rebuild_stats.pl is skipped when the
+# index is already present; see script/index-init.sh.
+set -e
+
+export HOME=/home/koyomi
+exec s6-setuidgid koyomi /home/koyomi/lanraragi/script/index-init.sh
