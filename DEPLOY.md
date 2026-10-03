@@ -277,7 +277,7 @@ docker logs lrr 2>&1 | grep index-init
 
 ```bash
 cd /path/to/lrr-custom
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v4 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v8 .
 ```
 
 **注意**：构建上下文必须是**仓库根目录**（`.`），因为 Dockerfile 里引用了 `/lib`、`/public`、`/templates` 等。
@@ -347,6 +347,57 @@ docker compose logs lrr | tail -50
 ```
 
 常见原因：归档目录路径写错、权限不足（`LRR_UID`/`LRR_GID` 与宿主机目录属主不符）。
+
+### 打开一本后，列表页封面还是占位图
+
+**现象**：阅读器里能正常看图，回到列表页封面依旧是灰色占位图；强刷（Ctrl+F5）后才出现。
+
+**原因**（两个叠加）：
+
+1. 本 fork 的懒生成设计下，封面**只在阅读器打开时才生成**。在此之前列表页拿到的是 `noThumb.png`。
+2. 列表页封面 URL 是固定的 `/api/archives/<id>/thumbnail`，**没有 cachebust 参数**——占位图和真封面是同一个 URL。若响应不带 `Cache-Control`，浏览器会启发式缓存那个占位图，之后即使真封面已生成也继续用缓存。
+
+**解决**：升级到 `v8` 或更新。该版本在 `Archive.pm` 的 `serve_thumbnail` 里为两个分支都加了缓存头：
+
+| 响应 | 头 |
+|---|---|
+| 真封面 | `Cache-Control: no-cache`（可缓存，但每次回源校验） |
+| 占位图 | `Cache-Control: no-store, must-revalidate`（禁止缓存） |
+
+验证：
+
+```bash
+# 真封面 → 应看到 Cache-Control: no-cache
+curl -sI http://127.0.0.1:3011/api/archives/<id>/thumbnail | grep -i cache-control
+
+# 不存在的 id → 应看到 Cache-Control: no-store, must-revalidate
+curl -sI http://127.0.0.1:3011/api/archives/deadbeef/thumbnail | grep -i cache-control
+```
+
+### 缩略图全部生成失败（`thumb/` 目录 Permission denied）
+
+**现象**：日志出现
+
+```
+mkdir /home/koyomi/lanraragi/thumb/XX: Permission denied
+```
+
+阅读器里页面缩略图空白，封面也一直是占位图；但归档列表、阅读正文、搜索都正常——所以**看起来像前端 bug，实际是权限问题**。
+
+**原因**：`thumb/`、`Sideloaded/`、`Managed/` 是**容器自己的数据目录**，不是远程内容卷。当宿主侧用一个新建的空目录 bind-mount 覆盖它们时，容器会继承那个挂载点的权限（常见是 `000`，属主为宿主用户），而 LRR 以 `koyomi`（9001）运行，连 `ls` 都做不了。
+
+**v8 之前的坑**：修复这三处的代码被放在 `if [ "$FIX_PERMS" -eq 1 ]` 块里，而远程内容卷场景下用户会设 `LRR_AUTOFIX_PERMISSIONS=-1` 以避免 FUSE 挂起——于是**关掉内容卷修复的同时，静默地关掉了容器自有目录的修复**。
+
+**解决**：升级到 `v8` 或更新。该版本把这三处的 `mkdir -p` + `chown` + `chmod` 移出了开关块，**无条件执行**；内容卷的修复仍然受开关控制，不受影响。
+
+启动日志里会看到：
+
+```
+Ensuring container-owned data folders are writable...
+Not touching content permissions          # 因为设了 -1，符合预期
+```
+
+**为什么现在才修**：`fix-attrs.d/01-lrr-dirs` 这个 s6-overlay 机制本来能做这件事，但它**从未被 Dockerfile COPY 进镜像**（只 COPY 了 `s6-rc.d/` 和 `cont-init.d/`），所以一直是死文件，现已删除，逻辑统一收进 `01-lrr-setup`。
 
 ---
 
