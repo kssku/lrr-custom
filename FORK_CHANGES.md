@@ -243,7 +243,8 @@
 | `public/js/mod/common.js` | 357-358 | 缩略图卡片模式 |
 
 去掉后后端走 `else` 分支，直接 `render_file ./public/img/noThumb.png`，
-**零 Minion 任务、零网盘读取**。缩略图只在**打开阅读器**时生成。
+**零 Minion 任务、零网盘读取**。缩略图只在**打开阅读器**时生成 ——
+准确地说，自第 12 节起，打开阅读器也**只生成封面**，不再生成页面缩略图。
 
 > `public/js/mod/common.js` 该处**上游原有注释本身就写着**
 > *"Don't enforce no_fallback=true here, we don't want those divs to trigger Minion jobs"*
@@ -316,6 +317,76 @@ docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'
 ```
 
 **生效方式**：三个都是 `.pm` 后端文件，同样**不在挂载表中** —— 必须**重建镜像**。
+
+> **第 12 节之后的变化**：本节描述的熔断器仍完全有效，但触发面进一步缩小 ——
+> 打开阅读器已不再请求页面缩略图（见第 12 节），因此 `thumbnail_task` 现在只服务
+> 封面这一张图。坏图拦截与熔断逻辑本身未改动。
+
+---
+
+### 12. 打开阅读器只生成封面（移除 MCE，修复 Minion 作业卡死）
+
+**问题**：即使第 10、11 节已把缩略图生成收窄到「打开阅读器」这一个入口，
+该入口在实际运行中**仍然会永久卡死 Minion worker**：作业停在 `active`，
+`performed=0`，页面目录一个文件都不产生，归档哈希里的 `thumbjob` 字段永不被清除，
+后续对该归档的请求全部被复用到一个永远不结束的旧作业 id 上。
+
+**根因**：`Utils/Minion.pm` 的 `thumbnail_task` / `page_thumbnails` 在 Minion
+**作业子进程**里初始化 `MCE::Shared`。该子进程内的 MCE 管理器握手**永远完不成**：
+
+| 观测项 | 值 |
+|---|---|
+| 进程状态 | 冻结，`wchan=0`（不在任何系统调用上等待） |
+| 打开的文件描述符 | 约 40 个**匿名 socket** |
+| `utime` | 卡在 0.16 秒不再增长 |
+| 页面输出 | 0 个文件 |
+| 作业状态 | 永久 `active`，`performed=0` |
+
+单独在容器里跑一个等价的 MCE 脚本**完全正常** —— 说明故障只在 Minion 作业
+子进程这一特定环境下触发（继承的 fd / 信号 / 进程组与 MCE 管理器的握手冲突）。
+
+**改动（`lib/LANraragi/Utils/Minion.pm`，净减 6 行）**：
+
+| # | 改动 |
+|---|---|
+| 1 | 移除模块级 `use MCE::Loop;` / `use MCE::Shared;` |
+| 2 | `MCE::Shared->array` → 普通 `my @errors = ()`；`$errors->push(...)` → `push @errors, ...`；`$errors->values` → `@errors` |
+| 3 | 两个 `IS_UNIX` 的 `mce_loop { ... } \@keys; MCE::Loop->finish;` → 顺序 `$sub->(@keys);` |
+| 4 | `find_duplicates` 的 `MCE::Shared->hash` → 普通哈希 |
+| 5 | 移除 `MCE::Shared->stop;` 调用 |
+
+**同时收窄为「只做封面」**（本次改造的实际目标）：
+
+| 文件 | 改动 |
+|---|---|
+| `Utils/Minion.pm` | `page_thumbnails` 任务体不再遍历 `1..N` 页，只生成第 0 页（即封面） |
+| `Model/Archive.pm` | `generate_page_thumbnails` 只检查**封面**是否存在；页面缩略图缺失**不再**触发入队 |
+| `public/js/mod/reader_common.js` | 打开阅读器不再 POST `/api/archives/<id>/files/thumbnails` |
+| `public/js/mod/reader_archive_overlay.js` | 页码直接显示数字，不再等待页面缩略图 |
+
+**代价与取舍**：阅读器翻页时不再有页面缩略图条，只显示页码。对本 fork 的场景
+（远程 FUSE、十万级库）这是划算的 —— 封面是列表页/详情页的刚需，页面缩略图只是
+阅读器里的导航辅助，而它需要**逐页读取远端归档**才能生成。
+
+**实测验证（镜像 `lrr-custom:v12`，容器 `lrr-test`）**：
+
+对 3 个归档分别删除封面后经 API 触发，封面全部正确生成，
+而各自的页面缩略图目录时间戳**保持不变**：
+
+| 归档 | 页数 | 封面 | 页面缩略图 |
+|---|---|---|---|
+| `60dd838c…` | 27 | 02:16 生成（98025 B）✅ | 停留在 02:08，未重渲染 ✅ |
+| `ae83730a…` | 28 | 02:18 生成（82301 B）✅ | 未生成 ✅ |
+| `bc0945f7…` | 59 | 02:18 生成（93544 B）✅ | 停留在 01:11，未重渲染 ✅ |
+
+触发后 `active: []`，所有作业 `finished`，`thumbjob` 字段被正确 `hdel`。
+
+**附带修复**：`lib/LANraragi.pm` 的 `missing_after` 从 `5` 恢复为上游默认
+`1800`（提交 `a9b22864`）。Minion worker 心跳间隔是 300 秒，而 `missing_after(5)`
+意味着任何超过 5 秒的作业都会让 worker 被判定为失联并被回收，与心跳间隔
+自相矛盾。
+
+**生效方式**：`.pm` 与 `public/js/` 都不在 compose 挂载表中 —— 必须**重建镜像**。
 
 ---
 
@@ -449,6 +520,8 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | 启动索引重建 | **十几分钟**且循环重跑 | **按需触发**：`index-init` 服务仅在 `LAST_JOB_TIME` 缺失时建一次 |
 | ID 跨机器稳定性 | **失效**（含绝对路径）| **稳定**（相对路径）|
 | 浏览列表页 | 每页入队缩略图任务 | **零任务**（占位图）|
+| 打开阅读器 | 生成封面 + 全部页面缩略图（逐页读远端归档）| **只生成封面**，零页面读取 |
+| Minion 作业子进程 | 作业卡 `active`，worker 被拖死 | **顺序执行，正常完成** |
 | 坏缩略图 | libvips die → 前端无限重试 → D 状态堆积 | **魔术字节拦截 + 3 次熔断** |
 
 > ℹ️ **关于启动索引重建**：本 fork 禁用的是**上游那种每次启动都全量重跑**的行为

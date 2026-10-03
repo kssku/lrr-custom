@@ -171,6 +171,7 @@ my $root = LANraragi::Model::Config::get_userdir();
   → 纯路径扫描：readdir + 路径哈希，**不打开归档**
   → 建 db0 hash + 写 arcids_idx
   → 缩略图：不生成（LRR_THUMBNAIL_MODE=lazy，首次阅读时才做）
+  → 首次打开阅读器：**只生成封面**（第 0 页），不再遍历生成页面缩略图
 ```
 
 **删除行为**：清 filemap，**保留 db0 孤儿** —— 这是上游行为，本 fork 未改。
@@ -270,7 +271,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 |---|---|---|
 | `LRR_DISABLE_SHINOBU` | **`0`** | **启用**监听（路径扫描已修好，FUSE 上可用）|
 | `LRR_SHINOBU_WATCH_DIRS` | `<分片列表>` | 作用域监听，冒号分隔；不设 = 空转 |
-| `LRR_THUMBNAIL_MODE` | `lazy` | 懒生成缩略图 |
+| `LRR_THUMBNAIL_MODE` | `lazy` | 懒生成缩略图（且只生成封面，见 §9.3.2）|
 | `LRR_DATA_DIRECTORY` | `<content 根目录>` | 内容根目录（**不是** `LRR_CONTENT_DIR`）|
 
 ---
@@ -373,7 +374,8 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | 文件 | 改动 |
 |---|---|
 | `lib/LANraragi/Utils/Database.pm` | `compute_id` 路径哈希 + `arcids_idx` |
-| `lib/LANraragi.pm` | `LRR_DISABLE_SHINOBU` + 禁用启动自动重建索引 |
+| `lib/LANraragi.pm` | `LRR_DISABLE_SHINOBU` + 禁用启动自动重建索引 + `missing_after` 恢复 1800 |
+| `lib/LANraragi/Utils/Minion.pm` | **移除 MCE（`MCE::Shared`/`MCE::Loop`）+ `page_thumbnails` 只做封面** |
 | `lib/LANraragi/Model/Search.pm` | 缓存软失效 + `KEYS` → `SCAN` |
 | `lib/LANraragi/Model/Archive.pm` | 分页下推 |
 | `lib/LANraragi/Controller/Api/Archive.pm` | `start` 参数语义 |
@@ -477,6 +479,40 @@ OPDS 目录每页每项都要付一次。
 
 > `patch-badimage/` 下脚本保留作为历史参考，但**不再是生效路径** —— 生效的是上述正式代码。
 > 详见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) §10、§11。
+
+### 9.3.2 移除 MCE + 只生成封面（2026-10-03，提交 `338434b2`）
+
+**现象**：Minion 作业永久卡在 `active`，`performed=0`，页面目录为空，
+`thumbjob` 字段不被清除，worker 被一起拖住。
+
+**根因（已实验证实）**：Minion 作业子进程内 `MCE::Shared` 的管理器握手永远完不成 ——
+子进程冻结在 `wchan=0`，持有约 40 个匿名 socket fd，`utime` 卡在 0.16 秒不再增长。
+**同样的 MCE 脚本在容器内独立运行正常**，故障只发生在 Minion 作业子进程里。
+
+**改动**：
+
+| 文件 | 改动 |
+|---|---|
+| `Utils/Minion.pm` | 移除 `MCE::Shared` / `MCE::Loop`，改普通数组 + 顺序 `$sub->(@keys)`；`page_thumbnails` 任务体**只生成第 0 页（封面）**，不再遍历 `1..N` |
+| `Model/Archive.pm` | `generate_page_thumbnails` 只检查**封面**是否存在，页面缩略图缺失不再触发入队 |
+| `public/js/mod/reader_common.js` | 打开阅读器时不再 POST `/files/thumbnails`（调用点以 `if (false)` 保留原代码注释）|
+| `public/js/mod/reader_archive_overlay.js` | 页码直接显示数字，不再等待页面缩略图 |
+
+**验证（镜像 `lrr-custom:v12`，容器 `lrr-test`）**：
+
+| 归档 | 页数 | 封面 | 页面缩略图 |
+|---|---|---|---|
+| `60dd838c` | 27 | 触发后生成 ✅ | 时间戳停留在触发前，未重渲染 ✅ |
+| `ae83730a` | 28 | 触发后生成（82301 B）✅ | 未生成 ✅ |
+| `bc0945f7` | 59 | 触发后生成（93544 B）✅ | 时间戳停留在触发前，未重渲染 ✅ |
+
+**副作用**：顺序处理替代 MCE 并行后，封面生成是串行的 ——
+在 FUSE 上单张封面约数秒，可接受；换来的是作业不再卡死。
+
+**附带修复**：`lib/LANraragi.pm:201` 的 `missing_after` 从 `5` 恢复为上游默认
+`1800`（提交 `a9b22864`）。Minion worker 心跳间隔是 300 秒，而 `missing_after(5)`
+意味着任何超过 5 秒的作业都会让 worker 被判定失联并回收 —— 与心跳间隔自相矛盾，
+是作业卡死之外的第二重故障源。
 
 ### 9.4 可选后续
 
