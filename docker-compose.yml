@@ -1,0 +1,86 @@
+# =============================================================================
+# lrr-custom —— 开箱即用的 compose 文件
+# -----------------------------------------------------------------------------
+# 使用已发布镜像 kssku123/lrr-custom:v14，挂载即用。
+#
+# 特点：
+#   - 不需要设置 LRR_SHINOBU_WATCH_DIRS —— 未设时自动探测 content 下的一级子目录
+#   - content 挂载不需要 :ro（可以加），但绝对不要加 rshared
+#   - 首次启动会自动探测目录、扫描入库、建立搜索索引，需要等一会儿
+#
+# 快速开始：
+#   1. 改下面三处 <...> 路径
+#   2. docker compose up -d
+#   3. 打开 http://<你的IP>:3000
+#
+# 详细说明见 DEPLOY.md
+# =============================================================================
+services:
+  lanraragi:
+    image: kssku123/lrr-custom:v14
+    container_name: lanraragi
+    restart: unless-stopped
+    ports:
+      # 左边是宿主端口，按需改（想避开已占用的 3000 就改成 3010:3000）
+      - "3000:3000"
+    environment:
+      # 内容根目录（容器内路径，不要改）
+      LRR_DATA_DIRECTORY: /home/koyomi/lanraragi/content
+
+      # 启用 Shinobu 自动扫描
+      LRR_DISABLE_SHINOBU: "0"
+
+      # -----------------------------------------------------------------------
+      # 扫描范围：**默认不设**，v14 会自动探测 content 下的一级子目录。
+      # 只有当你只想扫其中某几个目录时，才取消下面这行的注释并填写。
+      # 多个目录用冒号分隔，例如："wnacg:pika"
+      # 注意：填 content/ 本身会被拒绝（防退化成全库扫描）
+      # -----------------------------------------------------------------------
+      # LRR_SHINOBU_WATCH_DIRS: ""
+
+      # 扫描批处理参数（默认即可；扫得慢可调大 BATCH_SIZE）
+      LRR_SHINOBU_BATCH_SIZE: "20"
+      LRR_SHINOBU_BATCH_SLEEP: "2"
+
+      # 懒生成缩略图：列表页/入库不生成，只在打开阅读器时生成。
+      # 网盘（FUSE）上强烈建议保留此设置，否则入库会非常慢。
+      LRR_THUMBNAIL_MODE: lazy
+
+      # FUSE 挂载点上禁止自动递归修权限（会挂起容器）
+      LRR_AUTOFIX_PERMISSIONS: "-1"
+
+      # 容器内运行身份；如宿主目录属主不同，改这两个值
+      LRR_UID: "9001"
+      LRR_GID: "9001"
+
+      LRR_NETWORK: "http://*:3000"
+      TZ: Asia/Shanghai
+    volumes:
+      # -----------------------------------------------------------------------
+      # ⚠️ 下面第一行必须改成你自己的路径，否则容器起不来。
+      # 其它路径都是相对路径（./data/...），数据会留在本 compose 同目录下。
+      # -----------------------------------------------------------------------
+
+      # 你的漫画目录 —— 必须改成绝对路径，例如 /vol1/1000/comics
+      # 可以是一整个大目录，里面放多个子目录（v14 会自动探测）
+      - /path/to/your/comics:/home/koyomi/lanraragi/content
+
+      # 数据目录（Redis 数据库、缩略图、插件）—— 必须持久化
+      - ./data/database:/home/koyomi/lanraragi/database
+      - ./data/thumb:/home/koyomi/lanraragi/thumb
+      - ./data/sideloaded:/home/koyomi/lanraragi/lib/LANraragi/Plugin/Sideloaded
+      - ./data/managed:/home/koyomi/lanraragi/lib/LANraragi/Plugin/Managed
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - "--quiet"
+        - "--tries=1"
+        - "--no-check-certificate"
+        - "--spider"
+        - "-Y"
+        - "off"
+        - http://127.0.0.1:3000
+      interval: 30s
+      timeout: 10s
+      retries: 3
