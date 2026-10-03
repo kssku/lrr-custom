@@ -160,9 +160,7 @@ docker compose logs -f lrr      # 看扫描进度，Ctrl+C 退出日志不影响
 
 ---
 
-## 4. 首次启动后：两件必做的事
-
-### 🔴 第 1 件：等入库完成
+## 4. 首次启动后：等入库完成
 
 首次启动会自动扫描 `LRR_SHINOBU_WATCH_DIRS` 指定的目录并入库。
 
@@ -177,34 +175,53 @@ docker compose logs -f lrr      # 看扫描进度，Ctrl+C 退出日志不影响
 看进度：
 
 ```bash
-docker exec lrr sh -c 'redis-cli DBSIZE'     # db0 的键数，持续增长 = 在入库
+docker exec lrr valkey-cli -n 0 ZCARD arcids_idx    # 已入库数，持续增长 = 在入库
 ```
 
-### 🔴 第 2 件：手动重建统计索引（**不做界面会空白**）
+**归档是逐本实时可见的**：每入库一本就立即写进 `arcids_idx`，列表接口立刻能查到。
+不需要等全部扫完才看得到，刷新页面即可看到数量增长。
 
-**这是最容易踩的坑。** 本 fork **刻意禁用了启动时自动重建**（原因见 PROJECT.md §9），
-所以新部署必须手动跑一次，否则界面会显示「共 -1 件瑰宝」、归档列表空白。
+### 搜索索引：首次启动自动建立，无需手动操作
 
-**等入库完全结束后**，执行：
+界面的搜索、统计和「共 N 件瑰宝」计数都读**搜索索引库**（db3）。
+索引不存在时，`do_search()` 会直接返回 `(-1, -1)`，界面表现为
+「共 -1 件瑰宝」加轮播报错。
+
+索引由 `build_stat_hashes()` 生成，而这个函数在本 fork 中没有自动触发点
+（原因见 `PROJECT.md` §9）。为避免每个新部署都要手动补一步，
+容器现在通过 s6 一次性服务 `index-init` **在启动时自动处理**：
+
+| 情况 | 行为 |
+|---|---|
+| 索引已存在（`LAST_JOB_TIME` 有值） | 立即跳过，不耗时 |
+| 索引缺失（全新部署） | 自动重建一次，39,766 本约 94 秒 |
+
+它依赖 redis 启动、先于 lanraragi 运行，因此**不会**出现「界面已可访问但索引还没建」的窗口。
+重建失败不会阻止容器启动，只在日志中告警。
+
+**手动重建**（例如索引损坏、或入库完成后想立即刷新统计）：
 
 ```bash
-docker exec lrr sh -c 'cd /home/koyomi/lanraragi && perl -Ilib -I/home/koyomi/perl5/lib/perl5 -MLANraragi::Model::Stats -e "LANraragi::Model::Stats::build_stat_hashes()"'
+docker exec -u koyomi lrr perl /home/koyomi/lanraragi/script/rebuild_stats.pl
 ```
 
-**验证是否成功**：
+> ⚠️ **必须带 `-u koyomi`。** 以 root 运行会用 root 重建 `lanraragi.log`，
+> 之后以 koyomi 运行的 Web 服务将无法写入日志，**每个请求都会返回 500**。
+> `rebuild_stats.pl` 内置了 root 检测，误用会直接报错而不是静默破坏。
+
+**验证索引状态**：
 
 ```bash
-docker exec lrr sh -c 'redis-cli -n 3 GET LAST_JOB_TIME'
+docker exec lrr valkey-cli -n 3 GET LAST_JOB_TIME      # 返回数字 = 正常
 ```
 
-- 返回一个数字（如 `1791006269`）→ ✅ 成功
-- 返回空 → ❌ 没跑成功，界面会空白
-
-然后再验证接口：
+**查看自动初始化日志**：
 
 ```bash
-docker exec lrr sh -c 'wget -qO- "http://127.0.0.1:3000/api/search?filter=&start=0" | head -c 200'
+docker logs lrr 2>&1 | grep index-init
 ```
+
+正常输出为 `Search index already present; nothing to do.` 或 `Search index built.`
 
 返回 JSON 且含 `data` 数组 → ✅ 可以用了。
 
@@ -275,9 +292,23 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v4 .
 
 ### 界面显示「共 -1 件瑰宝」、列表空白
 
-**原因**：没跑 §4 第 2 件的 `build_stat_hashes`。
+**原因**：搜索索引缺失——`LAST_JOB_TIME` 在 db3 里不存在，`do_search()` 直接返回 `(-1,-1)`。
 
-**解决**：跑那条命令，然后确认 `LAST_JOB_TIME` 有值。
+正常情况下 `index-init` 服务会在启动时自动建立索引，所以先看它是否失败：
+
+```bash
+docker logs lrr 2>&1 | grep index-init
+docker exec lrr valkey-cli -n 3 GET LAST_JOB_TIME
+```
+
+**解决**：手动重建（**注意 `-u koyomi`**）：
+
+```bash
+docker exec -u koyomi lrr perl /home/koyomi/lanraragi/script/rebuild_stats.pl
+```
+
+索引建立后刷新页面即可。注意**入库尚未结束时索引是不完整的**——
+如果库很大，等扫描跑完再重建一次，计数才准确。
 
 ### 扫描很慢 / 卡住
 
@@ -292,7 +323,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v4 .
 **排查**：
 
 ```bash
-docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'   # 有无失败计数
+docker exec lrr sh -c 'valkey-cli -n 0 KEYS "thumbfail:*"'   # 有无失败计数
 ```
 
 **说明**：本 fork 已把列表页的主动请求去掉（`no_fallback` 修复）。如果你的镜像构建于该修复之前，需要重新构建。
