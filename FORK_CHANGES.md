@@ -500,7 +500,7 @@ Initial scan complete: 2 unit(s) in 1 batch(es), 0.6s.
 
 ```bash
 cd <仓库根>
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 ```
 
 - `tools/build/docker/Dockerfile` **存在于仓库**（136 行，多阶段构建：`base` → `build` → `runtime`）
