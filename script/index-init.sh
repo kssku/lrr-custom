@@ -45,6 +45,17 @@ log() {
     echo "[index-init] $*"
 }
 
+# Chdir into the project root before touching perl. LANraragi::Model::Config
+# resolves the project root via Mojo::Home->detect, which only ever looks at
+# the current directory -- $HOME is ignored. The s6 oneshot that calls us runs
+# from the oneshot runner's service directory, where detect() resolves to that
+# directory and Config dies looking for lrr.conf. Idempotent and harmless when
+# we were already invoked from the right place.
+cd "$LRR_DIR" || {
+    log "ERROR: cannot cd to $LRR_DIR; skipping index check."
+    exit 0
+}
+
 # Give redis a moment to accept connections. The s6 dependency only waits for
 # the service to be *started*, not for the server to be ready to serve.
 i=0

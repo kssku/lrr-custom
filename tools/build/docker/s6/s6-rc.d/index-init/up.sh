@@ -17,7 +17,21 @@
 #
 # Behaviour: runs on every container start, but index-init.sh skips the
 # rebuild when the index is already present (the common case on restarts).
+#
+# The `cd` is load-bearing, not cosmetic. LANraragi::Model::Config computes
+# the project root with Mojo::Home->detect, which is pure cwd sniffing --
+# $HOME has no effect on it:
+#
+#     cwd=/home/koyomi/lanraragi   -> /home/koyomi/lanraragi   (correct)
+#     cwd=<s6 oneshot runner dir>  -> that directory             (wrong)
+#
+# s6-rc runs oneshots with cwd set to the oneshot runner's service
+# directory, so without the `cd` Config looks for
+#   /run/s6-rc:s6-rc-init:<id>/servicedirs/s6rc-oneshot-runner/lrr.conf
+# and dies with "Configuration file ... missing", which propagates through
+# Logging.pm and kills rebuild_stats.pl before it writes a single key.
 set -e
 
 export HOME=/home/koyomi
+cd /home/koyomi/lanraragi
 exec s6-setuidgid koyomi /home/koyomi/lanraragi/script/index-init.sh
