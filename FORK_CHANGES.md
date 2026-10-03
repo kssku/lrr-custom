@@ -256,6 +256,69 @@
 
 ---
 
+### 11. 坏图拦截 + 缩略图失败熔断器
+
+**背景**：第 10 节把「浏览列表页主动要图」这条主要触发路径去掉了，
+但**坏图仍会在阅读器里被触发**。而一张坏图（0 字节 / 非图片数据）会让
+`extract_thumbnail` 每次都 die：
+
+```
+前端请求缩略图 → 入队 thumbnail_task → 打开 CBZ、从远端读图 → libvips die
+   ↑                                                              ↓
+   └──────────── 前端重试（无限循环），每次重开归档正文 ────────────┘
+```
+
+在 FUSE 挂载上，每次重试都是一个卡在远程 IO 的 **D 状态进程**，累积后拖垮容器。
+
+> ⚠️ **重要事实**：`patch-badimage/apply2.pl` 与 `apply3.pl` 此前**从未真正生效** ——
+> 它们是针对旧部署路径 `/opt/data/lanraragi/patched/` 写的脚本，且 `apply3.pl` 的
+> 熔断器只有「读」没有「写」。仓库与镜像中都不存在 `is_decodable_image` / `thumbfail`
+> 标记。本次将其**固化为正式代码**（提交 `48ff6caf`）。
+
+**改动（三个文件，纯新增 85 行）**：
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `lib/LANraragi/Utils/Archive.pm` | 新增 `is_decodable_image()`，在 `generate_thumbnail` 送 libvips **之前**按魔术字节判定；不通过则 `die "BROKEN_IMAGE: ..."` |
+| 2 | `lib/LANraragi/Utils/Minion.pm` | `thumbnail_task` 失败分支 `INCR thumbfail:<id>` + 24h TTL；成功分支 `DEL` |
+| 3 | `lib/LANraragi/Model/Archive.pm` | `serve_thumbnail` 入队前读 `thumbfail:<id>`，**≥ 3 次**不再入队，直接返回 `noThumb.png` |
+
+**`is_decodable_image` 识别的格式**（魔术字节）：
+
+| 格式 | 特征 |
+|---|---|
+| JPEG | `FF D8 FF` |
+| PNG | `89 50 4E 47 0D 0A 1A 0A` |
+| GIF | `GIF87a` / `GIF89a` |
+| WebP | `RIFF....WEBP` |
+| BMP | `BM` |
+| TIFF | `II*\0` / `MM\0*` |
+| AVIF/HEIF | `....ftyp(avif\|avis\|heic\|heix\|mif1\|msf1)` |
+| JXL | `FF 0A` |
+
+**熔断器参数**：
+- 阈值：**3 次**连续失败（`Model/Archive.pm` 中硬编码 `$thumbfail < 3`）
+- 计数键：`thumbfail:<archive_id>`，位于 **db0**（`get_redis`，归档库）
+- TTL：首次 `INCR` 时设 **86400 秒（24h）**，避免偶发失败永久拉黑
+- 成功即 `DEL`，计数清零
+
+**这是「事前避免 + 事后止血」两层防护**：
+
+| 层 | 手段 | 效果 |
+|---|---|---|
+| 前端 | 第 10 节：不再主动要图 | 大幅减少触发量 |
+| 后端 | 本节：坏图拦截 + 熔断 | 即使被触发，也会止损 |
+
+**排查命令**：
+
+```bash
+docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'
+```
+
+**生效方式**：三个都是 `.pm` 后端文件，同样**不在挂载表中** —— 必须**重建镜像**。
+
+---
+
 ## (B) 部署层面的改动（不在 Git 中）
 
 ### 1. 镜像
@@ -386,6 +449,7 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 | 启动索引重建 | **十几分钟**且循环重跑 | **禁用**，手动触发（见下方 ⚠️）|
 | ID 跨机器稳定性 | **失效**（含绝对路径）| **稳定**（相对路径）|
 | 浏览列表页 | 每页入队缩略图任务 | **零任务**（占位图）|
+| 坏缩略图 | libvips die → 前端无限重试 → D 状态堆积 | **魔术字节拦截 + 3 次熔断** |
 
 > ⚠️ **「禁用自动重建」的代价**：新部署或重建库后，**必须手动触发一次 `build_stat_hashes`**，
 > 否则 `LAST_JOB_TIME` 不写入、界面显示「共 -1 件瑰宝」。

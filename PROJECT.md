@@ -454,41 +454,29 @@ OPDS 目录每页每项都要付一次。
 | `patch-badimage/apply.sh` | 已失效，被 `apply2.pl` 覆盖 |
 | `patch-thumbfail/thumbfail.patch.pl` | 用 `docker exec` 改镜像内路径，违背 override 思路，与 `apply3.pl` 重叠 |
 
-### 9.3.1 ⚠️ 坏图/缩略图补丁从未应用（2026-10-03 核实）
+### 9.3.1 坏图/缩略图防护（2026-10-03 已固化为正式代码）
 
-`patch-badimage/` 下的两个补丁脚本**存在，但从未执行过** —— 仓库与镜像中均无其标记：
+**历史事实**：`patch-badimage/` 下的两个补丁脚本曾**长期从未生效** ——
+它们针对旧部署路径 `/opt/data/lanraragi/patched/`（该目录已不存在），
+且 `apply3.pl` 的熔断器只有「读」没有「写」。仓库与镜像中都不存在
+`is_decodable_image` / `thumbfail` 标记，文件大小逐字节相同。
 
-| 脚本 | 目标 | 标记 | 仓库 | 镜像 |
-|---|---|---|---|---|
-| `apply2.pl` | `Utils/Archive.pm` | `is_decodable_image` | ❌ 0 | ❌ 0 |
-| `apply3.pl` | `Model/Archive.pm` | `thumbfail:` | ❌ 0 | ❌ 0 |
-
-**文件大小逐字节相同**（`20704` / `17367`），确认补丁未被应用。
-
-**后果**：坏图防护**当前完全不存在**。完整风险链：
-
-```
-前端请求缩略图 → 后端入队 Minion 任务 → 打开 CBZ 读 CD2 → vips 处理坏图
-   → 任务失败 → 前端重试 → 再次入队 → D 状态进程堆积 → 容器被拖垮
-```
-
-**两个补丁各自的问题**：
-
-- **`apply2.pl`**（坏图魔术字节拦截）：逻辑完整可用，但**路径写死**
-  `/opt/data/lanraragi/patched/...`（该目录**已不存在**），不能直接执行，需手工套用逻辑。
-- **`apply3.pl`**（缩略图熔断器）：**半成品** —— 它只**读** `thumbfail:$id`，
-  **全仓库无任何地方写这个计数**（注释称「由 `Model/Minion.pm` 维护」，
-  但该文件不存在，真实路径是 `Utils/Minion.pm`，且其中也无写入代码）。
-  **即使打上去也是死代码** —— 计数恒为 0，熔断永不触发。
-
-**修复需要四处改动**（尚未实施）：
+**现状**：已将该逻辑**手工固化为正式代码**，提交 `48ff6caf`（纯新增 85 行）：
 
 | # | 文件 | 改动 |
 |---|---|---|
-| 1 | `public/js/mod/common.js`<br>`public/js/mod/index_datatables.js` | 去掉 `?no_fallback=true` ✅ **已完成（2026-10-03）** |
-| 2 | `lib/LANraragi/Utils/Archive.pm` | 加 `is_decodable_image` + `generate_thumbnail` 拦截 |
-| 3 | `lib/LANraragi/Utils/Minion.pm` | 失败 `INCR thumbfail:$id`，成功 `DEL` |
-| 4 | `lib/LANraragi/Model/Archive.pm` | `serve_thumbnail` 读计数，`>= 3` 返回占位图 |
+| 1 | `public/js/mod/common.js`<br>`public/js/mod/index_datatables.js` | 去掉 `?no_fallback=true`（提交 `32c6fedf`）|
+| 2 | `lib/LANraragi/Utils/Archive.pm` | 新增 `is_decodable_image()`，`generate_thumbnail` 送 libvips 前拦截，不通过则 `die "BROKEN_IMAGE: ..."` |
+| 3 | `lib/LANraragi/Utils/Minion.pm` | `thumbnail_task` 失败 `INCR thumbfail:<id>` + 24h TTL；成功 `DEL` |
+| 4 | `lib/LANraragi/Model/Archive.pm` | `serve_thumbnail` 入队前读 `thumbfail:<id>`，**≥ 3 次**不再入队，返回 `noThumb.png` |
+
+**防护链**：前端不主动要图（大幅减少触发）→ 后端魔术字节拦截（不送坏图给 vips）
+→ 失败计数 → 3 次熔断（停止入队，避免 D 状态进程堆积）。
+
+**排查**：`docker exec lrr sh -c 'redis-cli -n 0 KEYS "thumbfail:*"'`
+
+> `patch-badimage/` 下脚本保留作为历史参考，但**不再是生效路径** —— 生效的是上述正式代码。
+> 详见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) §10、§11。
 
 ### 9.4 可选后续
 
