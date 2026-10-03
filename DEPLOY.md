@@ -277,7 +277,7 @@ docker logs lrr 2>&1 | grep index-init
 
 ```bash
 cd /path/to/lrr-custom
-docker build -f tools/build/docker/Dockerfile -t lrr-custom:v8 .
+docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 ```
 
 **注意**：构建上下文必须是**仓库根目录**（`.`），因为 Dockerfile 里引用了 `/lib`、`/public`、`/templates` 等。
@@ -431,7 +431,135 @@ Not touching content permissions          # 因为设了 -1，符合预期
 
 ---
 
-## 8. 相关文档
+## 8. 已发布镜像与代理依赖
+
+### 8.1 从 Docker Hub 拉取现成镜像
+
+本 fork 的镜像已发布到 Docker Hub：
+
+```bash
+docker pull kssku123/lrr-custom:v14
+# 或跟随最新
+docker pull kssku123/lrr-custom:latest
+```
+
+`v14` 与 `latest` 指向同一镜像（digest `sha256:79f40208...`）。
+
+**直接运行**（0 个环境变量，挂载即用）：
+
+```bash
+docker run -d --name lanraragi \
+  -p 3000:3000 \
+  -v /你的漫画目录:/home/koyomi/lanraragi/content \
+  -v /你的数据目录:/home/koyomi/lanraragi/database \
+  -v /你的缩略图目录:/home/koyomi/lanraragi/thumb \
+  kssku123/lrr-custom:v14
+```
+
+> **content 不需要 `:ro`。** 「挂载即用」改造后，`LRR_SHINOBU_WATCH_DIRS`
+> 不设会自动探测 content 根的一级子目录，`LRR_AUTOFIX_PERMISSIONS` 默认 `-1`
+> 不再递归 chown。详见 [`FORK_CHANGES.md`](FORK_CHANGES.md) §13。
+
+**镜像内置的约定**（换机器部署时要知道）：
+
+| 变量 | 镜像内默认值 | 含义 |
+|---|---|---|
+| `LRR_UID` / `LRR_GID` | `9001` | 容器内运行用户 |
+| `LRR_AUTOFIX_PERMISSIONS` | `-1` | 跳过递归 chown（FUSE 安全）|
+| `LRR_NETWORK` | `http://*:3000` | 监听地址 |
+
+### 8.2 自己发布到 Docker Hub
+
+```bash
+# 1) 登录（建议用 Access Token 而非密码）
+docker login -u <你的用户名>
+
+# 2) 打标签（必须是 <用户名>/<仓库名>:<版本>）
+docker tag lrr-custom:v14 <你的用户名>/lrr-custom:v14
+docker tag lrr-custom:v14 <你的用户名>/lrr-custom:latest
+
+# 3) 推送
+docker push <你的用户名>/lrr-custom:v14
+docker push <你的用户名>/lrr-custom:latest
+```
+
+**发布前自查**：镜像里不应含私有数据。用这两条确认：
+
+```bash
+# content / database / thumb 应为空
+docker run --rm --entrypoint sh lrr-custom:v14 -c \
+  'ls -la /home/koyomi/lanraragi/content /home/koyomi/lanraragi/database /home/koyomi/lanraragi/thumb'
+# 无归档、无密钥
+docker run --rm --entrypoint sh lrr-custom:v14 -c \
+  'find /home/koyomi/lanraragi -name "*.cbz" -o -name "*.zip" -o -name "id_rsa" 2>/dev/null'
+```
+
+> **Access Token 权限只需 Read & Write**，不必给 Delete。
+> 若 token 曾在不安全的地方出现过，**立即到
+> [hub.docker.com/settings/security](https://hub.docker.com/settings/security) 撤销重建**。
+
+### 8.3 代理依赖（网络受限环境必看）
+
+若宿主机**直连 `registry-1.docker.io` 超时**（国内常见），但本地有 HTTP 代理
+（本机实测 mihomo 监听 `127.0.0.1:7890`），可让 Docker daemon 走代理。
+
+**症状**：
+
+```bash
+docker login
+# Error response from daemon: Get "https://registry-1.docker.io/v2/":
+#   context deadline exceeded
+```
+
+**诊断**：
+
+```bash
+# 直连（预期超时）
+curl -s -o /dev/null -w "%{http_code}\n" https://registry-1.docker.io/v2/
+# 经代理（预期 401 —— 连上即成功，401 是未带认证的正常响应）
+curl -s -x http://127.0.0.1:7890 -o /dev/null -w "%{http_code}\n" \
+  https://registry-1.docker.io/v2/
+```
+
+**配置**：编辑 `/etc/docker/daemon.json`，加 `proxies` 字段：
+
+```json
+{
+  "proxies": {
+    "http-proxy": "http://127.0.0.1:7890",
+    "https-proxy": "http://127.0.0.1:7890",
+    "no-proxy": ""
+  }
+}
+```
+
+> ⚠️ **代理端口要写宿主可达的地址**。daemon 在宿主上运行，`127.0.0.1:7890`
+> 正确；但**容器内**拉取时 `127.0.0.1` 指向容器自身，若需要容器也走代理，
+> 应改为宿主 IP 或 `host.docker.internal`。
+
+**生效**（`reload` 不够，`proxies` 是结构性配置）：
+
+```bash
+sudo systemctl restart docker
+docker info | grep -i "HTTP Proxy"      # 应显示代理地址
+```
+
+**安全性**：若 `daemon.json` 里 `"live-restore": true`，重启 daemon **不会停掉
+正在运行的容器**。
+
+**副作用**：该配置**持续生效**——之后所有 Docker 网络操作都经代理。
+若 mihomo 停止，拉镜像可能受影响。回滚方式：把 `proxies` 改回 `{}` 并重启 daemon。
+
+**Git 同理**（GitHub 443 不通时）：
+
+```bash
+git config --global http.proxy  http://127.0.0.1:7890
+git config --global https.proxy http://127.0.0.1:7890
+```
+
+---
+
+## 9. 相关文档
 
 | 文档 | 内容 |
 |---|---|
