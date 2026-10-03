@@ -178,13 +178,31 @@ sub generate_page_thumbnails {
 
     my $should_queue_job = 0;
 
-    for ( my $page = 1; $page <= $pages; $page++ ) {
-        my $thumbname = "$thumbdir/$subfolder/$id/$page.$format";
+    # CUSTOM FORK (feature/path-only-shinobu): the cover counts as a missing
+    # thumbnail too.
+    #
+    # The loop below only ever inspects pages 1..N. But this fork removed every
+    # other path that produced a cover (Shinobu.pm no longer extracts one on
+    # ingest, and the frontend no longer sends no_fallback=true). So an archive
+    # whose page thumbnails were all generated in an earlier run -- but whose
+    # cover failed or was never produced -- hit the `else` branch forever and
+    # returned "all thumbnails already exist" while the list page kept showing
+    # noThumb.png. Checking the cover here makes the queued job (which now also
+    # generates page 0) actually run for exactly that case.
+    if ( $force != 0 || !-e $thumbname ) {
+        $logger->debug("Cover thumbnail for $id doesn't exist (path: $thumbname or force=$force), queueing job.");
+        $should_queue_job = 1;
+    }
 
-        unless ( $force == 0 && -e $thumbname ) {
-            $logger->debug("Thumbnail for page $page doesn't exist (path: $thumbname or force=$force), queueing job.");
-            $should_queue_job = 1;
-            last;
+    if ( !$should_queue_job ) {
+        for ( my $page = 1; $page <= $pages; $page++ ) {
+            my $thumbname = "$thumbdir/$subfolder/$id/$page.$format";
+
+            unless ( $force == 0 && -e $thumbname ) {
+                $logger->debug("Thumbnail for page $page doesn't exist (path: $thumbname or force=$force), queueing job.");
+                $should_queue_job = 1;
+                last;
+            }
         }
     }
 

@@ -150,7 +150,33 @@ sub add_tasks {
 
             my $errors = MCE::Shared->array;
 
-            # Generate thumbnails for all pages -- Cover should already be handled in higher resolution
+            # CUSTOM FORK (feature/path-only-shinobu): page 0 (the cover) MUST be
+            # generated here, alongside the page thumbnails.
+            #
+            # Upstream assumed the cover was "already handled in higher resolution"
+            # elsewhere, and that comment still stands below. But this fork removed
+            # every one of those paths: Shinobu.pm no longer extracts a cover on
+            # ingest, and the frontend deliberately stopped sending no_fallback=true
+            # (which was the only remaining route that queued a thumbnail_task for
+            # page 0). Net effect: no automatic path produced a cover at all, so the
+            # list page showed noThumb.png forever -- the real cover only appeared
+            # if someone hand-called the API with no_fallback=true.
+            #
+            # Opening the reader is the one moment we know the user cares about this
+            # archive, and the archive is already being opened for its page
+            # thumbnails, so extracting the first page costs almost nothing extra.
+            # The list page stays untouched (no bulk queueing on the FUSE mount).
+            my $covername = "$thumbdir/$subfolder/$id.$format";
+            unless ( $force == 0 && -e $covername ) {
+                $logger->debug("Generating cover thumbnail for $id... ($covername)");
+                eval { $covername = extract_thumbnail( $thumbdir, $id, 0, 1, 1 ); };
+                if ($@) {
+                    $logger->warn("Error while generating cover thumbnail: $@");
+                    $errors->push($@);
+                }
+            }
+
+            # Generate thumbnails for all pages
             my @keys = ();
             for ( my $i = 1; $i <= $pages; $i++ ) {
                 push @keys, $i;
