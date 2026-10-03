@@ -373,25 +373,76 @@ remote，远程只有 `origin`（`kssku/lrr-custom`），历史为单根，与�
 改动只在本仓库内演进；上游的新特性**不自动流入**，如需某个上游修复，**手工挑选后
 单独提交**，并按下表逐行确认本地改动未被冲掉。
 
-下表是本 fork 与官方 `dev` 分叉点的**全部差异文件** —— 保留作为「本地改了什么」的
-索引，而非合并清单：
+下表按**改动主题**分组，列出本 fork 与官方分叉点的全部实质差异。
+**按主题而非按文件**：同一改动常散落在多个文件（如 `KEYS` 收敛涉及 9 个文件），
+按文件罗列必然漂移。
+
+**权威来源**（需要最新列表时，不要手工维护，直接跑）：
+
+```bash
+git diff --stat db310690..HEAD -- lib/ public/js/ tools/openapi.yaml
+```
+
+（`db310690` 是上游基线，`8370bf83` 是本 fork 首个提交。）
+
+### 8.1 核心性能改造（最高危，优先保护）
 
 | 文件 | 改动 |
 |---|---|
-| `lib/LANraragi/Utils/Database.pm` | `compute_id` 路径哈希 + `arcids_idx` |
-| `lib/LANraragi.pm` | `LRR_DISABLE_SHINOBU` + 禁用启动自动重建索引 + `missing_after` 恢复 1800 |
-| `lib/LANraragi/Utils/Minion.pm` | **移除 MCE（`MCE::Shared`/`MCE::Loop`）+ `page_thumbnails` 只做封面** |
-| `lib/LANraragi/Model/Search.pm` | 缓存软失效 + `KEYS` → `SCAN` |
+| `lib/LANraragi/Utils/Database.pm` | **`compute_id` 改路径哈希**（不读文件内容）+ `arcids_idx` + `get_all_archive_ids` |
+| `lib/Shinobu.pm` | **纯路径扫描（`readdir` 替代 `File::Find`）+ `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复** |
+| `lib/LANraragi/Utils/Ingest.pm` | **批量入库模块**（新增，断点续跑 + FUSE 健康门）|
 | `lib/LANraragi/Model/Archive.pm` | 分页下推 |
-| `lib/LANraragi/Controller/Api/Archive.pm` | `start` 参数语义 |
-| `lib/LANraragi/Controller/Category.pm` | 取消服务端全量渲染 |
-| `lib/Shinobu.pm` | **纯路径扫描 + `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复** |
-| `lib/LANraragi/Model/Plugins.pm` | 缩略图懒生成守卫 |
-| `tools/build/docker/Dockerfile` | 预建 `perl5` 目录（属主 `koyomi`）|
+| `lib/LANraragi/Model/Search.pm` | 缓存软失效 + `KEYS` → `SCAN` |
 
-**最高危两项**（若将来手工引入上游代码，先看这里）：
-- **`compute_id`** —— 被上游实现覆盖则全库 ID 全部失效。
-- **`Shinobu.pm`** —— 若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
+> ⚠️ **`compute_id` 与 `Shinobu.pm` 是最高危两项**：前者被上游实现覆盖则全库 ID
+> 全部失效；后者若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
+
+### 8.2 `KEYS` 全库阻塞扫描的收敛
+
+上游用 `KEYS('???…40个?')` 扫全库（16 万归档下阻塞 Redis 约 2 秒）。
+本 fork 全部改为 `get_all_archive_ids()` 读 `arcids_idx`：
+
+| 文件 | 改动 |
+|---|---|
+| `lib/LANraragi/Utils/Database.pm` | 新增 `get_all_archive_ids` |
+| `lib/LANraragi/Controller/Api/Database.pm` | `clear_new_all` 改用索引 |
+| `lib/LANraragi/Model/Backup.pm` | `build_backup_JSON` 改用索引 |
+| `lib/LANraragi/Plugin/Scripts/nHentaiSourceConverter.pm` | 改用索引 |
+| `lib/LANraragi/Model/Opds.pm` | 改用索引 |
+| `lib/LANraragi/Model/Stats.pm` | 改用索引 |
+| `lib/LANraragi/Model/Upload.pm` | 改用索引 |
+| `lib/LANraragi/Utils/Archive.pm` | 改用索引 + 坏图魔术字节拦截 |
+| `lib/LANraragi/Utils/Minion.pm` | 改用索引 + **移除 MCE** + `page_thumbnails` 只做封面 |
+
+### 8.3 稳定性与前端
+
+| 文件 | 改动 |
+|---|---|
+| `lib/LANraragi.pm` | `LRR_DISABLE_SHINOBU` + 禁用启动自动重建索引 + `missing_after` 恢复 1800 |
+| `lib/LANraragi/Model/Plugins.pm` | 缩略图懒生成守卫（`LRR_THUMBNAIL_MODE`）|
+| `lib/LANraragi/Utils/Path.pm` | `create_path` 在 Unix 上恒等，改 `File::Spec->catdir` |
+| `lib/LANraragi/Controller/Api/Archive.pm` | `start` 参数语义（省略时返回首页）|
+| `lib/LANraragi/Controller/Category.pm` | 取消服务端全量渲染 |
+| `public/js/category.js` | 前端分页加载归档列表 |
+| `public/js/batch.js` | 批量操作适配 |
+| `public/js/mod/common.js` | 去掉 `no_fallback=true` |
+| `public/js/mod/index_datatables.js` | 去掉 `no_fallback=true` |
+| `public/js/mod/reader_archive_overlay.js` | 阅读器适配 |
+| `public/js/mod/reader_common.js` | 阅读器适配 |
+| `tools/build/docker/Dockerfile` | 预建 `perl5` 目录（属主 `koyomi`）+ `LRR_AUTOFIX_PERMISSIONS` 默认 `-1` |
+| `tools/openapi.yaml` | 同步 `start` 参数与版本标识 |
+
+### 8.4 分叉点之外的仓库改动
+
+以下不属于代码逻辑，但同样偏离上游，手工引入时注意：
+
+- **构建/部署**：`tools/build/docker/s6/`（`index-init` oneshot、依赖关系、可执行位）、
+  `script/index-init.sh`、`script/rebuild_stats.pl`、`.gitignore`
+- **运维脚本**：`script/migrate_arcids.pl`、`script/verify_arcids.pl`、`script/ingest_batched.pl`
+- **文档**：`PROJECT.md`、`FORK_CHANGES.md`、`DEPLOY.md`、`README.md`、`CHANGELOG.md`、`CONTRIBUTING.md`
+- **元数据**：`package.json`（`version_name: Speed of Life`）、`LICENSE`、`.editorconfig`、`docker-compose.yml`
+- **i18n**：`locales/template/{en,zh}.po`、`templates/{category,i18n}.html.tt2`
 
 ---
 
@@ -494,7 +545,7 @@ OPDS 目录每页每项都要付一次。
 > 删除它**不等于**抹掉这段教训 —— 生效的是上述正式代码，而下面这条「为什么不能靠补丁脚本改行为」的结论必须保留：
 > 补丁脚本针对镜像内路径、绕过构建产物、无版本约束，改完**无人知道是否真的生效**；
 > 上面那两个脚本就这样静默失效了数月。**要改行为，就改仓库里的代码，再重建镜像。**
-> 详见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) §10、§11。
+> 详见 [`FORK_CHANGES.md`](./FORK_CHANGES.md) §11「坏图拦截 + 缩略图失败熔断器」。
 
 ### 9.3.2 移除 MCE + 只生成封面（2026-10-03，提交 `338434b2`）
 

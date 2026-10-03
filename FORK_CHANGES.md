@@ -1,11 +1,12 @@
 # lrr-custom —— 相对官方上游做了什么
 
 > 📖 **先读 [`PROJECT.md`](PROJECT.md)** —— 那是本 fork 的唯一权威项目总纲（架构 / 数据流 / 部署 / 运维 / 待办）。
-> 本文档是 PROJECT.md §5「核心改造点」的展开细节，专注回答「**相对官方上游改了什么**」。
+> 本文档专注回答「**相对官方上游改了什么**」：本文是**逐条技术说明与改造史**
+> （含「为什么改」「实测效果」「逃生开关」），文件清单见 [`PROJECT.md`](PROJECT.md) §8。
 >
 > 分两部分：**(A) 已提交到 Git 的代码改动**、**(B) 部署层面的配置与运维改动**。
 >
-> ⚠️ 改动代码时，**本文档与 `PROJECT.md` 必须同步更新**（见 `PROJECT.md` §11）。
+> ⚠️ 改动代码时，**本文档与 `PROJECT.md` 必须同步更新**（见 `PROJECT.md` 开头的「维护契约」节）。
 
 ---
 
@@ -657,19 +658,14 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 - **本 fork 自 2026-10-03 起独立维护，不再 merge 官方上游** —— 未配置 `upstream`
   remote，历史为单根，与官方已无合并关系
 - 上游新特性**不自动流入**；确需某个上游修复时**手工挑选、单独提交**
-- 以下文件是本 fork 相对上游分叉点的全部改动，用于确认「本地改了什么」：
-  - `lib/LANraragi/Utils/Database.pm` ← `compute_id` + `arcids_idx`
-  - `lib/LANraragi.pm` ← `LRR_DISABLE_SHINOBU` + 禁用自动重建
-  - `lib/LANraragi/Model/Search.pm` ← 缓存软失效 + `KEYS`→`SCAN`
-  - `lib/LANraragi/Model/Archive.pm` ← 分页下推
-  - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
-  - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
-  - `public/js/mod/common.js` ← 去掉 `no_fallback=true`
-  - `lib/Shinobu.pm` ← 纯路径扫描 + 作用域监听 + **未设时自动探测一级子目录**
-  - `tools/build/docker/Dockerfile` ← `LRR_AUTOFIX_PERMISSIONS` 默认 `1`→`-1`
-  - `public/js/mod/index_datatables.js` ← 去掉 `no_fallback=true`
-- 手工引入上游代码后，用 `git diff` 逐个比对上述文件是否被覆盖
+- **完整的差异文件清单见 [`PROJECT.md` §8](PROJECT.md)** —— 该表按改动主题分组，
+  并给出可直接执行的 `git diff` 命令作为权威来源
+- 手工引入上游代码后，用 `git diff` 逐个比对改动是否被覆盖
   （**不要**再依赖已废弃的 `override/` 机制）
+
+> **为什么这里不再重复列出文件**：同一份清单曾在 `PROJECT.md`、`README.md` 与本文件
+> 各写一遍，三份已互相矛盾（本文件曾漏掉 `Plugins.pm`、`Minion.pm`、`Utils/Archive.pm`、
+> `Ingest.pm` 等核心改动）。**清单只维护一处**，其余位置只放指针。
 
 ---
 

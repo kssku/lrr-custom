@@ -11,7 +11,7 @@
 |---|---|
 | **[`PROJECT.md`](PROJECT.md)** | **唯一权威总纲** —— 架构 / 数据流 / 部署 / 运维 / 性能基线 / 技术债 / 待办 |
 | [`DEPLOY.md`](DEPLOY.md) | **部署手册** —— 最小 compose、已发布镜像、代理依赖、常见问题排查 |
-| [`FORK_CHANGES.md`](FORK_CHANGES.md) | 相对官方上游的**全部改动**（PROJECT.md §5 的展开细节；本项目独立维护） |
+| [`FORK_CHANGES.md`](FORK_CHANGES.md) | 相对官方上游改动的**逐条技术说明**（含原因与实测数据；文件清单见 `PROJECT.md` §8） |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更记录（Keep a Changelog 格式） |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 开发约定 —— **含「改代码必须同步改文档」硬性规则** |
 
@@ -209,22 +209,22 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v14 .
 `origin`（`kssku/lrr-custom`），未配置 `upstream`，历史为单根。
 
 上游新特性**不自动流入**；确需某个上游修复时**手工挑选、单独提交**。
-以下文件是本 fork 相对上游分叉点的全部改动，用于确认本地改了什么：
 
-- `lib/LANraragi/Utils/Database.pm` ← `compute_id` + `arcids_idx`
-- `lib/LANraragi.pm` ← `LRR_DISABLE_SHINOBU` + 禁用自动重建索引
-- `lib/LANraragi/Model/Search.pm` ← 缓存软失效 + `KEYS`→`SCAN`
-- `lib/LANraragi/Model/Archive.pm` ← 分页下推
-- `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
-- `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
-- `lib/Shinobu.pm` ← **纯路径扫描 + `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复**
-  （注意：不在 `lib/LANraragi/Model/` 下，Shinobu 位于 `lib/` 顶层）
-- `lib/LANraragi/Model/Plugins.pm` ← **缩略图懒生成守卫**
-- `tools/build/docker/Dockerfile` ← **预建 `perl5` 目录（属主 koyomi）**
+以下是**最高危的两处**，被上游实现覆盖会立刻出问题：
 
-**特别是 `compute_id`** —— 被上游实现覆盖则全库 ID 会全部失效。
+| 文件 | 为什么危险 |
+|---|---|
+| `lib/LANraragi/Utils/Database.pm` | **`compute_id`** 被覆盖 ⇒ **全库 ID 全部失效** |
+| `lib/Shinobu.pm`（在 `lib/` 顶层，**不是** `Model/` 下）| 若恢复「扫描时读文件内容」⇒ FUSE 场景**重新卡死** |
 
-**特别是 `Shinobu.pm`** —— 若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
+本 fork 相对上游分叉点共有 **22 个实质改动的文件**（含构建/元数据共 25 个），
+完整清单见 [`PROJECT.md` §8](PROJECT.md#8-与上游的关系独立维护)。
+
+需要最新列表时**不要手工维护**，直接跑：
+
+```bash
+git diff --stat db310690..HEAD -- lib/ public/js/ tools/openapi.yaml
+```
 
 ---
 
