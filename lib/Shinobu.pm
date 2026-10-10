@@ -10,8 +10,9 @@ package Shinobu;
 use strict;
 use warnings;
 use utf8;
-use feature qw(say signatures);
+use feature qw(say signatures state);
 no warnings 'experimental::signatures';
+no warnings 'experimental::builtin';
 
 use local::lib;
 
@@ -527,102 +528,10 @@ sub add_new_file ( $id, $file ) {
 
         # CUSTOM FORK (feature/auto-tankoubon): aggregate multi-volume series into
         # a Tankoubon so the reader can page across volumes as one book.
-        #
-        # Path convention: .../<series_dir>/<bucket>/<series_id>/<volume>.cbz
-        #   - <series_dir> and <oneshot_dir> are CONFIGURABLE identifiers, read
-        #     from redis config (tankoubon_series_dir / tankoubon_oneshot_dir),
-        #     defaulting to "series" / "oneshots". Rename the on-disk folders and
-        #     update the two keys -- no code change needed.
-        #   - series name = <series_id> (the directory name, verbatim)
-        #   - only <series_dir> paths are grouped; <oneshot_dir> stay standalone
-        #   - decided purely from the path, the archive body is never opened
-        #
-        # Idempotency: LRR_SERIES_MAP (db0 hash) caches series_name -> tank_id.
-        # A hit reuses the existing Tankoubon; a miss creates one and records it.
-        # add_to_tankoubon() is itself idempotent (it zscores before zadd), so a
-        # re-ingest of the same volume does not add a duplicate member.
-        #
-        # create_tankoubon()/add_to_tankoubon() open and quit their OWN Redis
-        # connections, so they never disturb $redis / $redis_search here.
-        # Both identifiers come from config; defaults keep the current layout working.
-        #
-        # PERF: the getters go through get_redis_conf(), which opens a Redis
-        # connection, reads LRR_CONFIG and quits -- once per getter, per file.
-        # add_new_file() is called once per archive, so reading the config here
-        # would add 2 connect/disconnect cycles per archive (~500k on a 270k
-        # import) for values that do not change during a scan. Cache them per
-        # process with state; every MCE worker reads them once on its first file.
-        state $series_dir  = LANraragi::Model::Config::get_tankoubon_series_dir();
-        state $oneshot_dir = LANraragi::Model::Config::get_tankoubon_oneshot_dir();
-
-        # Quote the configurable names so a value with regex metacharacters cannot
-        # corrupt the pattern. An empty config value disables that role entirely.
-        my $series_re  = $series_dir  ne "" ? quotemeta($series_dir)  : undef;
-        my $oneshot_re = $oneshot_dir ne "" ? quotemeta($oneshot_dir) : undef;
-
-        # <series_dir>/<bucket>/<series_id>/<volume> -- but never under <oneshot_dir>.
-        if (   defined $series_re
-            && $file =~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}
-            && ( !defined $oneshot_re || $file !~ m{/$oneshot_re/} ) )
-        {
-
-            my $series_name = $1;
-
-            # CONCURRENCY (MCE::Loop runs add_new_file in parallel workers):
-            # the naive hget -> create -> hset sequence is a read-modify-write race.
-            # Two workers both see an empty map, both create a tank, and the second
-            # hset silently overwrites the first mapping, orphaning that tank and
-            # losing the volumes already attached to it.
-            #
-            # Fix: claim the map slot atomically with hsetnx, then publish the real
-            # tank id. The loser never writes the map; it recycles the tank it just
-            # created (which is still empty) and adopts the winner's id.
-            my $tank_id = $redis->hget( "LRR_SERIES_MAP", $series_name );
-
-            unless ($tank_id) {
-
-                # Reserve the slot with a sentinel so only one worker proceeds.
-                my $claimed = $redis->hsetnx( "LRR_SERIES_MAP", $series_name, "__PENDING__" );
-
-                if ($claimed) {
-                    # Pass "" rather than undef: create_tankoubon() calls length($tank_id),
-                    # which warns on undef. "" makes it mint a fresh TANK_<time> id.
-                    $tank_id = create_tankoubon( $series_name, "" );
-
-                    # Publish the real id, replacing our sentinel.
-                    $redis->hset( "LRR_SERIES_MAP", $series_name, $tank_id );
-                    $logger->info("Auto-tankoubon: created $tank_id for series '$series_name'.");
-                } else {
-                    # Lost the race: another worker owns this series. Wait briefly for
-                    # it to publish the real id (it is never the sentinel once set).
-                    for my $try ( 1 .. 50 ) {
-                        my $got = $redis->hget( "LRR_SERIES_MAP", $series_name );
-                        if ( $got && $got ne "__PENDING__" ) {
-                            $tank_id = $got;
-                            last;
-                        }
-                        select undef, undef, undef, 0.02;    # 20ms
-                    }
-
-                    # If the winner crashed between claim and publish, take over:
-                    # reclaim the sentinel and build the tank ourselves.
-                    unless ( $tank_id && $tank_id ne "__PENDING__" ) {
-                        my $stale = $redis->hget( "LRR_SERIES_MAP", $series_name );
-                        if ( !$stale || $stale eq "__PENDING__" ) {
-                            $redis->hset( "LRR_SERIES_MAP", $series_name, "__PENDING__" );
-                            $tank_id = create_tankoubon( $series_name, "" );
-                            $redis->hset( "LRR_SERIES_MAP", $series_name, $tank_id );
-                            $logger->warn("Auto-tankoubon: reclaimed stale sentinel for '$series_name' -> $tank_id.");
-                        } else {
-                            $tank_id = $stale;
-                        }
-                    }
-                }
-            }
-
-            my ( $ok, $err ) = add_to_tankoubon( $tank_id, $id );
-            $logger->debug("Auto-tankoubon: $id -> $tank_id (ok=$ok, $err)");
-        }
+        # The decision is purely path-based (the archive body is never opened);
+        # the implementation lives in auto_tankoubon_hook() below so that both this
+        # ingest path and the tests drive the SAME code.
+        auto_tankoubon_hook( $file, $id, $redis, $logger );
     };
 
     if ($@) {
@@ -630,6 +539,137 @@ sub add_new_file ( $id, $file ) {
     }
     $redis->quit;
     $redis_search->quit;
+}
+
+# CUSTOM FORK (feature/auto-tankoubon): aggregate multi-volume series into a
+# Tankoubon so the reader can page across volumes as one book.
+#
+# Path convention: <library_root>/<series_dir>/<bucket>/<series_id>/<volume>.cbz
+#   - <series_dir> / <oneshot_dir> are CONFIGURABLE identifiers (redis keys
+#     tankoubon_series_dir / tankoubon_oneshot_dir, default "series"/"oneshots").
+#   - <library_root> comes from tankoubon_library_roots (comma-separated). It
+#     qualifies the identity key so a same-named series in two libraries
+#     (wnacg/series/10000 vs pika/series/10000) never collapses into one
+#     Tankoubon. With no roots configured the key stays bare (legacy behavior).
+#   - series_id = the <series_id> directory name, verbatim
+#   - only <series_dir> paths are grouped; <oneshot_dir> stay standalone
+#   - decided purely from the path, the archive body is never opened
+#
+# Identity key: "<library>:<series_id>" (or bare "<series_id>" with no roots).
+# LRR_SERIES_MAP (db0 hash) caches that key -> tank_id: a hit reuses the existing
+# Tankoubon; a miss creates one and records it. add_to_tankoubon() is itself
+# idempotent (it zscores before zadd), so a re-ingest adds no duplicate member.
+#
+# create_tankoubon()/add_to_tankoubon() open and quit their OWN Redis connections,
+# so they never disturb the caller's $redis.
+#
+# PERF: the config getters go through get_redis_conf(), which opens a connection,
+# reads LRR_CONFIG and quits -- once per getter. This function runs once per
+# archive, so reading config here would add 3 connect/disconnect cycles per
+# archive (~800k on a 270k import) for values that never change during a scan.
+# They are cached per process with state; each MCE worker evaluates them once.
+sub auto_tankoubon_hook {
+    my ( $file, $id, $redis, $logger ) = @_;
+
+    # state declarations must carry an initializer (a bare "state $x;" does not
+    # introduce the lexical name); undef marks "not read yet" so the first call
+    # fills them and every later call reuses the cached values.
+    state $series_dir  = undef;
+    state $oneshot_dir = undef;
+    state $roots_raw   = undef;
+
+    unless ( defined $series_dir ) {
+        $series_dir  = LANraragi::Model::Config::get_tankoubon_series_dir();
+        $oneshot_dir = LANraragi::Model::Config::get_tankoubon_oneshot_dir();
+        $roots_raw   = LANraragi::Model::Config::get_tankoubon_library_roots();
+    }
+
+    # Quote the configurable names so a value with regex metacharacters cannot
+    # corrupt the pattern. An empty config value disables that role entirely.
+    my $series_re  = $series_dir  ne "" ? quotemeta($series_dir)  : undef;
+    my $oneshot_re = $oneshot_dir ne "" ? quotemeta($oneshot_dir) : undef;
+
+    # <series_dir>/<bucket>/<series_id>/<volume> -- but never under <oneshot_dir>.
+    # The regex is anchored at the end, so <bucket> and <series_id> are the two
+    # segments right before the filename; anything deeper is ignored.
+    return unless (   defined $series_re
+                   && $file =~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}
+                   && ( !defined $oneshot_re || $file !~ m{/$oneshot_re/} ) );
+
+    my $series_id = $1;
+
+    # Qualify the identity key with the first matching library root. A root is a
+    # prefix of the archive path, so the most specific (longest) match wins --
+    # that keeps nested roots from shadowing each other.
+    my $library = "";
+    if ( $roots_raw ne "" ) {
+        my @roots = grep { $_ ne "" } map { s/\/+$//r } split /,/, $roots_raw;
+
+        # Sort longest-first so /mnt/comics/v2 beats /mnt/comics.
+        for my $root ( sort { length($b) <=> length($a) } @roots ) {
+            if ( index( $file, "$root/" ) == 0 ) {
+                $library = $root;
+                last;
+            }
+        }
+    }
+
+    # The key the map is indexed by. With a root, include it so cross-library
+    # same-named series stay apart; without one, stay backward compatible.
+    my $series_key = $library ne "" ? "$library:$series_id" : $series_id;
+
+    # CONCURRENCY (MCE::Loop runs add_new_file in parallel workers): the naive
+    # hget -> create -> hset sequence is a read-modify-write race. Two workers
+    # both see an empty map, both create a tank, and the second hset silently
+    # overwrites the first mapping, orphaning that tank and the volumes on it.
+    #
+    # Fix: claim the map slot atomically with hsetnx, then publish the real tank
+    # id. The loser never writes the map; it adopts the winner's id instead.
+    my $tank_id = $redis->hget( "LRR_SERIES_MAP", $series_key );
+
+    unless ($tank_id) {
+
+        # Reserve the slot with a sentinel so only one worker proceeds.
+        my $claimed = $redis->hsetnx( "LRR_SERIES_MAP", $series_key, "__PENDING__" );
+
+        if ($claimed) {
+            # Pass "" rather than undef: create_tankoubon() calls length($tank_id),
+            # which warns on undef. "" makes it mint a fresh TANK_<time> id.
+            $tank_id = create_tankoubon( $series_id, "" );
+
+            # Publish the real id, replacing our sentinel.
+            $redis->hset( "LRR_SERIES_MAP", $series_key, $tank_id );
+            $logger->info("Auto-tankoubon: created $tank_id for series '$series_key'.");
+        } else {
+            # Lost the race: another worker owns this series. Wait briefly for
+            # it to publish the real id (it is never the sentinel once set).
+            for my $try ( 1 .. 50 ) {
+                my $got = $redis->hget( "LRR_SERIES_MAP", $series_key );
+                if ( $got && $got ne "__PENDING__" ) {
+                    $tank_id = $got;
+                    last;
+                }
+                select undef, undef, undef, 0.02;    # 20ms
+            }
+
+            # If the winner crashed between claim and publish, take over:
+            # reclaim the sentinel and build the tank ourselves.
+            unless ( $tank_id && $tank_id ne "__PENDING__" ) {
+                my $stale = $redis->hget( "LRR_SERIES_MAP", $series_key );
+                if ( !$stale || $stale eq "__PENDING__" ) {
+                    $redis->hset( "LRR_SERIES_MAP", $series_key, "__PENDING__" );
+                    $tank_id = create_tankoubon( $series_id, "" );
+                    $redis->hset( "LRR_SERIES_MAP", $series_key, $tank_id );
+                    $logger->warn("Auto-tankoubon: reclaimed stale sentinel for '$series_key' -> $tank_id.");
+                } else {
+                    $tank_id = $stale;
+                }
+            }
+        }
+    }
+
+    my ( $ok, $err ) = add_to_tankoubon( $tank_id, $id );
+    $logger->debug("Auto-tankoubon: $id -> $tank_id (ok=$ok, $err)");
 }
 
 __PACKAGE__->initialize_from_new_process unless caller;

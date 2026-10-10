@@ -189,6 +189,67 @@
 
 ---
 
+### 9. 自动 Tankoubon：按路径聚合多卷系列（feature/auto-tankoubon）
+
+**动因**：多卷本漫画在库里是「一卷一个归档」，阅读器里要一本本点开。上游 Tankoubon
+需要手动建、手动加卷，十万级库上不现实。
+
+**做法**：入库时**只看路径**，把同一系列的卷自动聚合成一个 Tankoubon。
+
+**路径约定**：`.../<series_dir>/<bucket>/<series_id>/<volume>.cbz`
+
+- `<series_dir>` / `<oneshot_dir>` 是**可配置标识**（`tankoubon_series_dir` /
+  `tankoubon_oneshot_dir`，默认 `series` / `oneshots`）。改盘上目录名 + 改配置即可，
+  不用动代码。
+- 系列名 = `<series_id>`（目录名，**原样取值**，不做任何规范化）
+- 只聚合 `<series_dir>` 下的路径；`<oneshot_dir>` 保持独立单本
+- 正则**尾部锚定**，所以 `<bucket>` 和 `<series_id>` 是文件名前两段，更深层目录被忽略
+- **判定纯靠路径，归档本体从不打开** —— 与思路 5「入库零文件读取」同一原则
+
+**幂等**：`LRR_SERIES_MAP`（db0 hash）缓存 `series_key -> tank_id`。命中复用已有
+Tankoubon；未命中则新建并记录。`add_to_tankoubon()` 自身幂等（先 zscore 再 zadd），
+重复入库同一卷不会产生重复成员。
+
+**跨库同名系列隔离（`tankoubon_library_roots`）**：
+
+- **逗号分隔**的绝对路径，如 `/mnt/wnacg,/mnt/pika`
+- 用**第一个匹配的库根**限定身份键 → `<library>:<series_id>`
+- 匹配时**按长度降序**，最具体的根优先（`/mnt/comics/v2` 压过 `/mnt/comics`），
+  避免嵌套根互相遮蔽
+- **空值 = 向后兼容**（键退回纯 `<series_id>`），已有 `LRR_SERIES_MAP` 条目继续可用
+- 场景：`wnacg/series/10000` 与 `pika/series/10000` 是两个不同系列，不会被合并
+
+**并发安全（MCE 关键）**：Shinobu 用 `MCE::Loop` 并行跑 `add_new_file`，而
+`hget -> create -> hset` 是典型的 read-modify-write 竞态 —— 两个 worker 同时看到空
+映射、各建一个 Tank、后写的 `hset` 静默覆盖前者，**那个 Tank 及其上的卷就成了孤儿**。
+
+- 修复：用 `hsetnx` 原子抢占映射槽（写入哨兵 `__PENDING__`），抢到的才建 Tank 并
+  发布真实 id；没抢到的**绝不写映射**，改为采纳赢家的 id
+- 输家**轮询等待**赢家发布（最多 50 次 × 20ms）
+- 赢家在「抢占」与「发布」之间崩溃时，输家**接管哨兵**自行建 Tank
+- `create_tankoubon()` 传 `""` 而非 `undef`：它内部调 `length($tank_id)`，`undef` 会告警；
+  `""` 让它铸造新的 `TANK_<time>` id
+
+**性能**：配置 getter 走 `get_redis_conf()`，每次开一次 Redis 连接读 `LRR_CONFIG` 再退。
+本函数**每个归档调一次**，若在此读配置会平白加 3 次连接/断连周期（27 万导入 ≈ 80 万次）。
+改用 `state` 按进程缓存，每个 MCE worker 只在首个文件求值一次。
+
+> 注意：`state $x;`（不带初始化器）**不会**引入词法名。必须写 `state $x = undef;`。
+
+**测试**：`tests/auto_tankoubon_e2e.pl` —— 25 项断言，覆盖
+
+- 配置覆盖生效（改 `series_dir` / `oneshot_dir` 后断言用的是**配置值**而非默认值）
+- 路径正则：命中 / oneshot 排除 / 过浅路径 / 嵌套卷目录 / 改名后旧字面量失配
+- 完整 hook 排除「嵌在 oneshot 目录下的 series 路径」
+- 建 Tank → 缓存 id → 第二卷复用 → 重复入库不产生重复成员 → 只建了一个 Tank
+- `LRR_TANKGROUPED`：卷从主搜索隐藏，Tank 暴露给主搜索
+
+**隔离**：测试把 `MOJO_HOME` 指向临时目录、拷贝一份 `lrr.conf` 并改写 redis 库号
+（9-13），全部落到 scratch 库；必须在 `Config.pm` **编译前**设置（它加载时读 conf），
+所以用 `require` 而非 `use`。跑法：`perl -Ilib tests/auto_tankoubon_e2e.pl`
+
+---
+
 ## (B) 部署层面的改动（不在 Git 中）
 
 ### 1. 镜像
@@ -245,6 +306,7 @@
 | `script/verify_arcids.pl` | 索引一致性自检（支持 `--fix`）|
 | `script/bench_arcids.pl` | 索引性能基准 |
 | `script/bench_http.pl` | HTTP 分页性能基准 |
+| `tests/auto_tankoubon_e2e.pl` | 自动 Tankoubon 端到端自检（25 断言，用 scratch redis 库，不碰生产）|
 
 ---
 
@@ -253,6 +315,7 @@
 | 场景 | 官方上游 | 本 fork |
 |---|---|---|
 | 全库 ID 计算 | 数十小时（FUSE 读内容）| **分钟级**（只哈希路径）|
+| 多卷系列聚合 | 手动建 Tankoubon | **入库时自动聚合**（纯路径判定）|
 | `/api/archives?start=0` | 秒级 | **亚秒级** |
 | `/api/archives`（省略 start）| **数十秒**（worker 被判死）| **亚秒级** |
 | 分类页渲染 | **分钟级 / 十几 MB** | 前端分页，**秒级** |
@@ -273,10 +336,40 @@
   - `lib/LANraragi/Model/Archive.pm` ← 分页下推
   - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
   - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
+  - `lib/Shinobu.pm` ← 纯路径扫描 + 作用域监听 + 自动 Tankoubon hook
+  - `lib/LANraragi/Model/Config.pm` ← 三个 tankoubon 配置 getter（见第 9 节）
+  - `lib/LANraragi/Model/Plugins.pm` ← 缩略图 gate（`LRR_THUMBNAIL_MODE`）
+  - `tools/openapi.yaml` ← `/api/archives` 的 `start` 语义
+  - `lib/LANraragi/Model/Upload.pm` ← ⚠️ **尚未对齐懒加载**，见下方「已知偏差」
 - 升级镜像后，用 `override/Utils/Database.pm` 与镜像内官方原版逐行比对
+
+---
+
+## 已知偏差（未修）
+
+### Upload.pm 手动上传路径仍在入库时读文件
+
+思路 5 的「入库零文件读取」覆盖了 Shinobu 扫描路径，但
+`lib/LANraragi/Model/Upload.pm` 的手动上传 / 后台下载路径（`Minion.pm` 调用
+`handle_incoming_file`）**仍在上传时读文件**：
+
+```perl
+add_pagecount( $redis, $id );      # get_filelist() 打开归档读 TOC
+add_arcsize( $redis, $id );        # -s $file，stat 本体
+extract_thumbnail( $thumbdir, $id, 1, 1, 1 );   # 两次 FUSE 读
+```
+
+同一个函数往上 40 行的 `add_archive_to_redis` 已加 `$want_size` 懒加载开关，
+这三行没跟着 gate —— **改了一半**。
+
+- **影响面**：不碰主战场（Shinobu 全库扫描不走这条），单文件级多两次 FUSE 读
+- **违反**：主旨「入库路径零文件读取」+「缩略图只在阅读器打开时做」
+- **修法**：三行加 `LRR_THUMBNAIL_MODE` gate（与 `Plugins.pm` 同构）
+- **注意**：跳过 `add_pagecount` 后，`Api/Archive.pm:475` 的进度更新逻辑
+  （`unless ( $pagecount || $force )`）对新上传文件会要求 `force` 才生效
 
 ---
 
 ## 一句话总结
 
-**把 LANraragi 从「面向本地小库」改造为「十万级库 + 网盘 FUSE 远程存储可用」** —— 核心是四件事：**ID 不再读文件内容**、**分页不再 `KEYS` 全扫**、**搜索缓存能真正命中**、**ID 不再绑定安装路径**。
+**把 LANraragi 从「面向本地小库」改造为「十万级库 + 网盘 FUSE 远程存储可用」** —— 核心是五件事：**ID 不再读文件内容**、**分页不再 `KEYS` 全扫**、**搜索缓存能真正命中**、**ID 不再绑定安装路径**、**多卷系列入库即自动聚合为 Tankoubon**。

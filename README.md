@@ -109,6 +109,7 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 | 全库 ID 计算 | 数十小时（FUSE 读内容）| **分钟级**（只哈希路径）|
 | 全库扫描（Shinobu）| 卡死 / 数小时 | **约 54 秒**（纯路径）|
 | 增量入库 | 不支持（已禁用）| **inotify 实时，~2 秒** |
+| 多卷系列聚合 | 手动建 Tankoubon | **入库时自动聚合**（按路径）|
 | `/api/archives?start=0` | 秒级 | **亚秒级** |
 | `/api/archives`（省略 start）| **数十秒**（worker 被判死）| **亚秒级** |
 | 分类页渲染 | **分钟级 / 十几 MB** | 前端分页，**秒级** |
@@ -140,6 +141,14 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 | `LRR_SHINOBU_WATCH_DIRS` | `<分片列表>` | **作用域监听**，冒号分隔；不设 = 空转 |
 | `LRR_THUMBNAIL_MODE` | `lazy` | **懒生成缩略图**，首次打开才做（`auto` = 上游行为）|
 | `LRR_CONTENT_DIR` | `<content 根目录>` | 内容根目录 |
+
+**自动 Tankoubon 的 Redis 配置**（存于 `LRR_CONFIG`，非环境变量）：
+
+| 键 | 默认值 | 作用 |
+|---|---|---|
+| `tankoubon_series_dir` | `series` | 系列目录名；其下的 `<bucket>/<series_id>/<卷>` 会被聚合成 Tankoubon |
+| `tankoubon_oneshot_dir` | `oneshots` | 单本目录名；即使嵌在 `series` 下也不聚合 |
+| `tankoubon_library_roots` | 空 | **逗号分隔的库根绝对路径**，用于限定同名系列的归属；空 = 向后兼容（不加前缀）|
 
 **网盘挂载**（只读）：
 
@@ -184,12 +193,19 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v3 .
 - `lib/LANraragi/Controller/Api/Archive.pm` ← `start` 参数语义
 - `lib/LANraragi/Controller/Category.pm` ← 取消服务端全量渲染
 - `lib/LANraragi/Model/Shinobu.pm` ← **纯路径扫描 + `LRR_SHINOBU_WATCH_DIRS` + `create_path` 修复**
+- `lib/Shinobu.pm` ← **自动 Tankoubon 聚合（`auto_tankoubon_hook`）**
+- `lib/LANraragi/Model/Config.pm` ← **`tankoubon_*` 配置 getter**
 - `lib/LANraragi/Model/Plugins.pm` ← **缩略图懒生成守卫**
 - `tools/build/docker/Dockerfile` ← **预建 `perl5` 目录（属主 koyomi）**
+- `tools/openapi.yaml` ← **`start` 参数语义**（与 `Controller/Api/Archive.pm` 一致）
 
 **特别是 `compute_id`** —— 如果上游改动覆盖了它，全库 ID 会全部失效。
 
 **特别是 `Shinobu.pm`** —— 上游若恢复「扫描时读文件内容」，FUSE 场景会重新卡死。
+
+**特别是 `lib/Shinobu.pm`** —— 自动 Tankoubon 挂在 `add_new_file` 的入库路径上，
+上游若重写该函数，需把 `auto_tankoubon_hook()` 调用点重新接回；
+`Config.pm` 的三个 getter 若被上游覆盖，`auto_tankoubon_hook` 会直接报错。
 
 ---
 
