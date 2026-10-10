@@ -47,6 +47,10 @@ use LANraragi::Utils::Path       qw(create_path find_path get_archive_path);
 use LANraragi::Model::Config;
 use LANraragi::Model::Plugins;
 use LANraragi::Model::Metrics;
+# CUSTOM FORK (feature/auto-tankoubon): aggregate multi-volume archives under
+# series/ into Tankoubon (series collections) at ingest time. Path-only decision,
+# never opens the archive body -- consistent with feature/path-only-shinobu.
+use LANraragi::Model::Tankoubon qw(create_tankoubon add_to_tankoubon);
 use LANraragi::Utils::Plugins;    # Needed here since Shinobu doesn't inherit from the main LRR package
 use LANraragi::Model::Search;     # idem
 
@@ -519,6 +523,81 @@ sub add_new_file ( $id, $file ) {
         }
         else {
             $logger->debug("Skipping index refresh for $id (tags already indexed by set_tags).");
+        }
+
+        # CUSTOM FORK (feature/auto-tankoubon): aggregate multi-volume series into
+        # a Tankoubon so the reader can page across volumes as one book.
+        #
+        # Path convention: .../series/<bucket>/<series_id>/<volume>.cbz
+        #   - series name = <series_id> (the directory name, verbatim)
+        #   - only /series/ paths are grouped; /oneshots/ stay standalone
+        #   - decided purely from the path, the archive body is never opened
+        #
+        # Idempotency: LRR_SERIES_MAP (db0 hash) caches series_name -> tank_id.
+        # A hit reuses the existing Tankoubon; a miss creates one and records it.
+        # add_to_tankoubon() is itself idempotent (it zscores before zadd), so a
+        # re-ingest of the same volume does not add a duplicate member.
+        #
+        # create_tankoubon()/add_to_tankoubon() open and quit their OWN Redis
+        # connections, so they never disturb $redis / $redis_search here.
+        if ( $file =~ m{/series/[^/]+/([^/]+)/[^/]+$} ) {
+
+            my $series_name = $1;
+
+            # CONCURRENCY (MCE::Loop runs add_new_file in parallel workers):
+            # the naive hget -> create -> hset sequence is a read-modify-write race.
+            # Two workers both see an empty map, both create a tank, and the second
+            # hset silently overwrites the first mapping, orphaning that tank and
+            # losing the volumes already attached to it.
+            #
+            # Fix: claim the map slot atomically with hsetnx, then publish the real
+            # tank id. The loser never writes the map; it recycles the tank it just
+            # created (which is still empty) and adopts the winner's id.
+            my $tank_id = $redis->hget( "LRR_SERIES_MAP", $series_name );
+
+            unless ($tank_id) {
+
+                # Reserve the slot with a sentinel so only one worker proceeds.
+                my $claimed = $redis->hsetnx( "LRR_SERIES_MAP", $series_name, "__PENDING__" );
+
+                if ($claimed) {
+                    # Pass "" rather than undef: create_tankoubon() calls length($tank_id),
+                    # which warns on undef. "" makes it mint a fresh TANK_<time> id.
+                    $tank_id = create_tankoubon( $series_name, "" );
+
+                    # Publish the real id, replacing our sentinel.
+                    $redis->hset( "LRR_SERIES_MAP", $series_name, $tank_id );
+                    $logger->info("Auto-tankoubon: created $tank_id for series '$series_name'.");
+                } else {
+                    # Lost the race: another worker owns this series. Wait briefly for
+                    # it to publish the real id (it is never the sentinel once set).
+                    for my $try ( 1 .. 50 ) {
+                        my $got = $redis->hget( "LRR_SERIES_MAP", $series_name );
+                        if ( $got && $got ne "__PENDING__" ) {
+                            $tank_id = $got;
+                            last;
+                        }
+                        select undef, undef, undef, 0.02;    # 20ms
+                    }
+
+                    # If the winner crashed between claim and publish, take over:
+                    # reclaim the sentinel and build the tank ourselves.
+                    unless ( $tank_id && $tank_id ne "__PENDING__" ) {
+                        my $stale = $redis->hget( "LRR_SERIES_MAP", $series_name );
+                        if ( !$stale || $stale eq "__PENDING__" ) {
+                            $redis->hset( "LRR_SERIES_MAP", $series_name, "__PENDING__" );
+                            $tank_id = create_tankoubon( $series_name, "" );
+                            $redis->hset( "LRR_SERIES_MAP", $series_name, $tank_id );
+                            $logger->warn("Auto-tankoubon: reclaimed stale sentinel for '$series_name' -> $tank_id.");
+                        } else {
+                            $tank_id = $stale;
+                        }
+                    }
+                }
+            }
+
+            my ( $ok, $err ) = add_to_tankoubon( $tank_id, $id );
+            $logger->debug("Auto-tankoubon: $id -> $tank_id (ok=$ok, $err)");
         }
     };
 

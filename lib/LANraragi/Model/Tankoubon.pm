@@ -26,7 +26,7 @@ use LANraragi::Utils::Tags     qw(join_tags_to_string split_tags_to_array);
 my %TANK_METADATA = ( "name", 0, "summary", -1, "tags", -2, "progress", -3 );
 
 use Exporter 'import';
-our @EXPORT_OK = qw(tank_has_archive_in_set set_tank_tags get_tank_unified_tags update_tank_imputed_indexes serve_tankoubon_thumbnail update_tankoubon_thumbnail update_tank_progress);
+our @EXPORT_OK = qw(create_tankoubon add_to_tankoubon get_tankoubon get_tankoubon_list tank_has_archive_in_set set_tank_tags get_tank_unified_tags update_tank_imputed_indexes serve_tankoubon_thumbnail update_tankoubon_thumbnail update_tank_progress);
 
 # get_tankoubon_list(page)
 #   Returns a list of all the Tankoubon objects.
