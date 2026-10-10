@@ -340,33 +340,38 @@ Tankoubon；未命中则新建并记录。`add_to_tankoubon()` 自身幂等（�
   - `lib/LANraragi/Model/Config.pm` ← 三个 tankoubon 配置 getter（见第 9 节）
   - `lib/LANraragi/Model/Plugins.pm` ← 缩略图 gate（`LRR_THUMBNAIL_MODE`）
   - `tools/openapi.yaml` ← `/api/archives` 的 `start` 语义
-  - `lib/LANraragi/Model/Upload.pm` ← ⚠️ **尚未对齐懒加载**，见下方「已知偏差」
+  - `lib/LANraragi/Model/Upload.pm` ← 上传路径懒加载 gate（`LRR_THUMBNAIL_MODE`）
 - 升级镜像后，用 `override/Utils/Database.pm` 与镜像内官方原版逐行比对
 
 ---
 
-## 已知偏差（未修）
+## 入库路径懒加载覆盖范围（全路径对齐）
 
-### Upload.pm 手动上传路径仍在入库时读文件
+思路 5 的「入库零文件读取」现已覆盖**全部入库路径**：
 
-思路 5 的「入库零文件读取」覆盖了 Shinobu 扫描路径，但
-`lib/LANraragi/Model/Upload.pm` 的手动上传 / 后台下载路径（`Minion.pm` 调用
-`handle_incoming_file`）**仍在上传时读文件**：
+| 路径 | 文件 | 状态 |
+|------|------|------|
+| 全库扫描 / 作用域监听 | `lib/Shinobu.pm` | ✅ 纯路径扫描，不读文件 |
+| 后台下载完成回调 | `lib/LANraragi/Utils/Minion.pm` → `handle_incoming_file` | ✅ 走 Upload.pm，已 gate |
+| 手动上传 | `lib/LANraragi/Model/Upload.pm` | ✅ 已 gate（见下） |
 
-```perl
-add_pagecount( $redis, $id );      # get_filelist() 打开归档读 TOC
-add_arcsize( $redis, $id );        # -s $file，stat 本体
-extract_thumbnail( $thumbdir, $id, 1, 1, 1 );   # 两次 FUSE 读
-```
+### Upload.pm 的 gate 实现
 
-同一个函数往上 40 行的 `add_archive_to_redis` 已加 `$want_size` 懒加载开关，
-这三行没跟着 gate —— **改了一半**。
+`lib/LANraragi/Model/Upload.pm` 在 `add_timestamp_tag` 之后按
+`$ENV{LRR_THUMBNAIL_MODE} // 'lazy'` 分流：
 
-- **影响面**：不碰主战场（Shinobu 全库扫描不走这条），单文件级多两次 FUSE 读
-- **违反**：主旨「入库路径零文件读取」+「缩略图只在阅读器打开时做」
-- **修法**：三行加 `LRR_THUMBNAIL_MODE` gate（与 `Plugins.pm` 同构）
-- **注意**：跳过 `add_pagecount` 后，`Api/Archive.pm:475` 的进度更新逻辑
-  （`unless ( $pagecount || $force )`）对新上传文件会要求 `force` 才生效
+- **`lazy`（默认）**：跳过 `add_pagecount` 与 `extract_thumbnail`，打 debug 日志
+- **`auto`**：上游行为，`add_pagecount` + `extract_thumbnail($thumbdir, $id, 1, 1, 1)`
+- `add_arcsize` **恒保留**：只是 `-s` stat，不打开归档，不算「读文件」
+
+与 `lib/LANraragi/Model/Plugins.pm:236-263` 的 gate 同构。
+
+### 已知副作用（有意取舍）
+
+跳过 `add_pagecount` 后，新上传文件的 `pagecount` 为空，
+`lib/LANraragi/Controller/Api/Archive.pm:475` 的进度更新逻辑
+（`unless ( $pagecount || $force )`）会要求客户端带 `force=1` 才推进进度。
+这是用「多传一个参数」换「入库不读文件」，取舍成立。
 
 ---
 
