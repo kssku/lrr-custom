@@ -220,4 +220,12 @@ sub can_replacetitles    { return &get_redis_conf( "replacetitles",   "1" ) }
 sub get_language         { return &get_redis_conf( "language",        "auto" ) }
 sub get_excludednamespaces { return &get_redis_conf( "excludednamespaces", "source, date_added" ) }
 
+# CUSTOM FORK (feature/auto-tankoubon): the directory names that drive automatic
+# Tankoubon grouping. A path whose last-but-two segment equals tankoubon_series_dir
+# is aggregated into a series Tankoubon; one under tankoubon_oneshot_dir is kept
+# standalone. Both are user-configurable so the on-disk layout can change without
+# a code change -- the reader only cares about the identifiers, not the names.
+sub get_tankoubon_series_dir  { return &get_redis_conf( "tankoubon_series_dir",  "series" ) }
+sub get_tankoubon_oneshot_dir { return &get_redis_conf( "tankoubon_oneshot_dir", "oneshots" ) }
+
 1;

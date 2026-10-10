@@ -528,9 +528,13 @@ sub add_new_file ( $id, $file ) {
         # CUSTOM FORK (feature/auto-tankoubon): aggregate multi-volume series into
         # a Tankoubon so the reader can page across volumes as one book.
         #
-        # Path convention: .../series/<bucket>/<series_id>/<volume>.cbz
+        # Path convention: .../<series_dir>/<bucket>/<series_id>/<volume>.cbz
+        #   - <series_dir> and <oneshot_dir> are CONFIGURABLE identifiers, read
+        #     from redis config (tankoubon_series_dir / tankoubon_oneshot_dir),
+        #     defaulting to "series" / "oneshots". Rename the on-disk folders and
+        #     update the two keys -- no code change needed.
         #   - series name = <series_id> (the directory name, verbatim)
-        #   - only /series/ paths are grouped; /oneshots/ stay standalone
+        #   - only <series_dir> paths are grouped; <oneshot_dir> stay standalone
         #   - decided purely from the path, the archive body is never opened
         #
         # Idempotency: LRR_SERIES_MAP (db0 hash) caches series_name -> tank_id.
@@ -540,7 +544,27 @@ sub add_new_file ( $id, $file ) {
         #
         # create_tankoubon()/add_to_tankoubon() open and quit their OWN Redis
         # connections, so they never disturb $redis / $redis_search here.
-        if ( $file =~ m{/series/[^/]+/([^/]+)/[^/]+$} ) {
+        # Both identifiers come from config; defaults keep the current layout working.
+        #
+        # PERF: the getters go through get_redis_conf(), which opens a Redis
+        # connection, reads LRR_CONFIG and quits -- once per getter, per file.
+        # add_new_file() is called once per archive, so reading the config here
+        # would add 2 connect/disconnect cycles per archive (~500k on a 270k
+        # import) for values that do not change during a scan. Cache them per
+        # process with state; every MCE worker reads them once on its first file.
+        state $series_dir  = LANraragi::Model::Config::get_tankoubon_series_dir();
+        state $oneshot_dir = LANraragi::Model::Config::get_tankoubon_oneshot_dir();
+
+        # Quote the configurable names so a value with regex metacharacters cannot
+        # corrupt the pattern. An empty config value disables that role entirely.
+        my $series_re  = $series_dir  ne "" ? quotemeta($series_dir)  : undef;
+        my $oneshot_re = $oneshot_dir ne "" ? quotemeta($oneshot_dir) : undef;
+
+        # <series_dir>/<bucket>/<series_id>/<volume> -- but never under <oneshot_dir>.
+        if (   defined $series_re
+            && $file =~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}
+            && ( !defined $oneshot_re || $file !~ m{/$oneshot_re/} ) )
+        {
 
             my $series_name = $1;
 

@@ -12,6 +12,10 @@
 # verbatim against the real Tankoubon functions, which is what the hook itself
 # does -- the only thing not covered is the surrounding eval in add_new_file.
 #
+# The two directory identifiers (tankoubon_series_dir / tankoubon_oneshot_dir)
+# are read from config here, exactly as Shinobu does, so a rename in config is
+# covered: the assertions below use the CONFIGURED names, not the defaults.
+#
 # Usage: perl -Ilib tests/auto_tankoubon_e2e.pl
 # Exit:  0 = all assertions pass, 1 = a check failed.
 
@@ -81,8 +85,6 @@ LANraragi::Model::Tankoubon->import(qw(create_tankoubon add_to_tankoubon get_tan
 # the ones add_to_tankoubon()/create_tankoubon() open internally -- onto
 # scratch DBs, so the live library is never touched.
 #
-# This must happen BEFORE Config.pm is compiled: it reads the conf at load time.
-#
 # No manual SELECT is needed (or wanted): the conf already points archive at db9
 # and search at db12, so every connection lands on the right scratch DB by
 # construction. A stray select() here would collapse the two DBs into one and
@@ -98,6 +100,26 @@ my $redis_search = LANraragi::Model::Config->get_redis_search;
 my @existing = $redis->keys('*');
 plan skip_all => "redis db $TEST_DB is not empty (" . scalar(@existing) . " keys)" if @existing;
 
+# --- configured identifiers ------------------------------------------------
+# The hook's directory names now come from config (db11, LRR_CONFIG). Seed them
+# explicitly so the test pins the CONFIGURED values, not the defaults -- that is
+# the whole point of making them configurable. If the hook still had the
+# literals baked in, the renamed-path assertions below would fail.
+my $redis_config = LANraragi::Model::Config->get_redis_config;
+$redis_config->hset( 'LRR_CONFIG', 'tankoubon_series_dir',  'collections' );
+$redis_config->hset( 'LRR_CONFIG', 'tankoubon_oneshot_dir', 'standalone' );
+
+# Read them back through the public getters -- the same calls Shinobu makes.
+my $series_dir  = LANraragi::Model::Config::get_tankoubon_series_dir();
+my $oneshot_dir = LANraragi::Model::Config::get_tankoubon_oneshot_dir();
+is( $series_dir,  'collections', 'config override for series dir is honoured' );
+is( $oneshot_dir, 'standalone',  'config override for oneshot dir is honoured' );
+
+# Quote them exactly as Shinobu does: a value with regex metacharacters must not
+# corrupt the pattern.
+my $series_re  = $series_dir  ne "" ? quotemeta($series_dir)  : undef;
+my $oneshot_re = $oneshot_dir ne "" ? quotemeta($oneshot_dir) : undef;
+
 # --- seed two fake archives ------------------------------------------------
 my @arcs = (
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -108,14 +130,24 @@ for my $i ( 0 .. $#arcs ) {
     my $id = $arcs[$i];
     $redis->hset( $id, 'title', "Vol " . ( $i + 1 ) );
     $redis->hset( $id, 'tags',  '' );
-    $redis->hset( $id, 'file',  "/content/wnacg/series/doujin/MySeries/vol" . ( $i + 1 ) . ".cbz" );
+    $redis->hset( $id, 'file',  "/content/wnacg/$series_dir/doujin/MySeries/vol" . ( $i + 1 ) . ".cbz" );
 }
 
 # --- reproduce the hook ----------------------------------------------------
 # Kept in sync with lib/Shinobu.pm by hand; if the regex there changes, this
-# copy must change too or the e2e stops representing production.
+# copy must change too or the e2e stops representing production. The regex is
+# built from the SAME config values Shinobu reads, so a rename is covered here.
 sub auto_tankoubon_hook ( $id, $file ) {
-    if ( $file =~ m{/series/[^/]+/([^/]+)/[^/]+$} ) {
+    my $series_dir  = LANraragi::Model::Config::get_tankoubon_series_dir();
+    my $oneshot_dir = LANraragi::Model::Config::get_tankoubon_oneshot_dir();
+
+    my $series_re  = $series_dir  ne "" ? quotemeta($series_dir)  : undef;
+    my $oneshot_re = $oneshot_dir ne "" ? quotemeta($oneshot_dir) : undef;
+
+    if (   defined $series_re
+        && $file =~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}
+        && ( !defined $oneshot_re || $file !~ m{/$oneshot_re/} ) )
+    {
         my $series_name = $1;
         my $tank_id     = $redis->hget( "LRR_SERIES_MAP", $series_name );
 
@@ -131,12 +163,29 @@ sub auto_tankoubon_hook ( $id, $file ) {
 }
 
 # --- 1. path filtering -----------------------------------------------------
-ok( "/content/x/series/doujin/MySeries/vol1.cbz" =~ m{/series/[^/]+/([^/]+)/[^/]+$}, 'series path matches' );
+# Match against the CONFIGURED names, not the defaults: if the hook still had
+# the literals baked in, these would fail.
+ok( "/content/x/$series_dir/doujin/MySeries/vol1.cbz" =~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}, 'series path matches' );
 is( $1, 'MySeries', 'series name captured verbatim' );
 
-ok( "/content/x/oneshots/foo/bar.cbz" !~ m{/series/[^/]+/([^/]+)/[^/]+$}, 'oneshot path does not match' );
-ok( "/content/x/series/MySeries/vol1.cbz" !~ m{/series/[^/]+/([^/]+)/[^/]+$}, 'too-shallow series path does not match' );
-ok( "/content/x/series/doujin/MySeries/sub/vol1.cbz" !~ m{/series/[^/]+/([^/]+)/[^/]+$}, 'nested volume dir does not match' );
+ok( "/content/x/$oneshot_dir/foo/bar.cbz" !~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}, 'oneshot path does not match' );
+ok( "/content/x/$series_dir/MySeries/vol1.cbz" !~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}, 'too-shallow series path does not match' );
+ok( "/content/x/$series_dir/doujin/MySeries/sub/vol1.cbz" !~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}, 'nested volume dir does not match' );
+
+# A path under the OLD literal 'series' must NOT match once the config was
+# renamed -- this is the regression the old hardcoded regex would have missed.
+ok( "/content/x/series/doujin/MySeries/vol1.cbz" !~ m{/$series_re/[^/]+/([^/]+)/[^/]+$}, 'old literal series dir no longer matches after rename' );
+
+# An oneshot path that also sits under the series dir is still excluded.
+# This one needs the FULL hook, not just the series regex: the regex alone
+# matches (the oneshot dir simply looks like a series name), and it is the
+# hook's oneshot exclusion that rejects it. Asserting on the regex here would
+# test half the logic and pass for the wrong reason.
+{
+    my @res = auto_tankoubon_hook( 'cccccccccccccccccccccccccccccccccccccccc',
+        "/content/x/$series_dir/$oneshot_dir/MySeries/vol1.cbz" );
+    ok( !defined $res[0], 'series path nested under oneshot dir is excluded by the full hook' );
+}
 
 # --- 2. first volume creates the tank -------------------------------------
 my ( $tank_id, $ok, $err ) = auto_tankoubon_hook( $arcs[0], $redis->hget( $arcs[0], 'file' ) );
@@ -185,6 +234,12 @@ $redis->del('LRR_SERIES_MAP');
 $redis_search->del('LRR_TANKGROUPED');
 $redis_search->del('LRR_TITLES');
 $redis_search->del('LRR_SEARCHCACHE');
+
+# The config keys seeded above live in db11, which is NOT guarded by the
+# db-empty check -- clean them explicitly so repeated runs stay independent.
+$redis_config->del( 'tankoubon_series_dir', 'tankoubon_oneshot_dir' );
+$redis_config->quit;
+
 $redis->quit;
 $redis_search->quit;
 
