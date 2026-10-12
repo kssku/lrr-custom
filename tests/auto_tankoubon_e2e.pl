@@ -223,6 +223,74 @@ is( $redis_search->sismember( 'LRR_TANKGROUPED', $arcs[0] ), 0, 'volume 1 hidden
 is( $redis_search->sismember( 'LRR_TANKGROUPED', $arcs[1] ), 0, 'volume 2 hidden from main search' );
 is( $redis_search->sismember( 'LRR_TANKGROUPED', $tank_id ),  1, 'tank exposed to main search' );
 
+# --- 5b. concurrent tank creation must mint UNIQUE ids ---------------------
+# Regression for fix/concurrent-tank-id. The stock generator was
+# "TANK_" . time(), a second-resolution value: several MCE workers calling it
+# in the same second computed the SAME id, and the exists()-then-write window
+# let two of them both believe the key was free. Live symptom was two series
+# (SeriesAlpha, SeriesBeta) sharing one tank id and therefore one Redis zset.
+#
+# The in-process version cannot reproduce that race -- a single process never
+# runs the generator twice in the same tick here. So fork real children, all
+# calling create_tankoubon() at once, and assert the ids come back distinct.
+{
+    my $workers = 8;
+    my @pids;
+
+    for my $i ( 1 .. $workers ) {
+        my $pid = fork();
+        if ( !defined $pid ) {
+            fail("fork failed: $!");
+            last;
+        }
+        if ( $pid == 0 ) {
+            # Child: its own connection to the scratch DBs (create_tankoubon
+            # opens and quits its own handles, so no state is shared).
+            my $kid_redis = LANraragi::Model::Config->get_redis;
+            my $kid_id    = create_tankoubon( "RaceSeries$i", "" );
+            $kid_redis->set( "RACE_RESULT_$i", $kid_id );
+            $kid_redis->quit;
+            exit 0;
+        }
+        push @pids, $pid;
+    }
+
+    waitpid( $_, 0 ) for @pids;
+
+    my @minted;
+    for my $i ( 1 .. $workers ) {
+        my $id = $redis->get("RACE_RESULT_$i");
+        push @minted, $id if defined $id;
+        $redis->del("RACE_RESULT_$i");
+    }
+
+    is( scalar @minted, $workers, 'every concurrent worker reported an id' );
+
+    my %seen;
+    my @dupes = grep { $seen{$_}++ } @minted;
+    is( scalar @dupes, 0, 'no two concurrent workers minted the same tank id' )
+        or diag( 'duplicate ids: ' . join( ', ', @dupes ) );
+
+    # The ids must ALSO stay 10 digits, or keys('TANK_??????????') stops seeing
+    # them and the tanks vanish from listings/search.
+    my @bad_width = grep { !/^TANK_\d{10}$/ } @minted;
+    is( scalar @bad_width, 0, 'every minted id keeps the TANK_ + 10-digit shape' )
+        or diag( 'malformed ids: ' . join( ', ', @bad_width ) );
+
+    # And each id must be a live, distinct tank key.
+    for my $id (@minted) {
+        ok( $redis->exists($id), "tank key $id exists" );
+    }
+
+    $redis->del(@minted);
+}
+
+# create_tankoubon() now mints ids from a Redis INCR counter
+# (LRR_TANK_ID_SEQ, fix/concurrent-tank-id). That key is a side effect of the
+# call, not of the assertions, so it survives every check above -- and the
+# db-empty guard at the top would then skip the whole suite on the next run.
+$redis->del('LRR_TANK_ID_SEQ');
+
 # --- cleanup --------------------------------------------------------------
 $redis->del($tank_id);
 $redis->del(@arcs);
