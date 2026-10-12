@@ -157,15 +157,43 @@ sub handle_incoming_file ( $tempfile, $catid, $tags, $title, $summary ) {
     # Now that the file has been copied, we can add the timestamp tag and calculate pagecount.
     # (The file being physically present is necessary in case last modified time is used)
     add_timestamp_tag( $redis, $id );
-    add_pagecount( $redis, $id );
+
+    # CUSTOM FORK (feature/path-only-shinobu): "zero file reads at ingest" must
+    # hold on the manual-upload/download path too, not just the Shinobu scan.
+    # add_pagecount() opens the archive (get_filelist = one FUSE read) and
+    # extract_thumbnail() opens it again (get_filelist + extract_single_file =
+    # two more). Gate both behind LRR_THUMBNAIL_MODE, same as Plugins.pm:
+    #
+    #   lazy (default) - skip pagecount and thumbnail at ingest. The reader
+    #                    computes the page count from the archive it already
+    #                    opened, and the thumbnail is built on first open.
+    #   auto           - upstream behaviour: compute both right here.
+    #
+    # add_arcsize() is only a stat (-s) on the file, no archive read, so it is
+    # always kept.
+    #
+    # NOTE: skipping add_pagecount() leaves pagecount unset on fresh uploads;
+    # Api/Archive.pm only force-updates progress when `$pagecount || $force`,
+    # so a client that wants to advance progress on such a file must pass
+    # force=1. This is the accepted tradeoff for not touching the remote mount.
+    my $thumbnail_mode = $ENV{LRR_THUMBNAIL_MODE} // 'lazy';
+    if ( $thumbnail_mode eq 'lazy' ) {
+        $logger->debug("Skipping pagecount for $id (LRR_THUMBNAIL_MODE=lazy).");
+    } else {
+        add_pagecount( $redis, $id );
+    }
     add_arcsize( $redis, $id );
     $redis->quit();
     $redis_search->quit();
     $redis_config->quit();
 
     # Generate thumbnail
-    my $thumbdir = LANraragi::Model::Config->get_thumbdir;
-    extract_thumbnail( $thumbdir, $id, 1, 1, 1 );
+    if ( $thumbnail_mode eq 'lazy' ) {
+        $logger->debug("Skipping thumbnail generation for $id (LRR_THUMBNAIL_MODE=lazy).");
+    } else {
+        my $thumbdir = LANraragi::Model::Config->get_thumbdir;
+        extract_thumbnail( $thumbdir, $id, 1, 1, 1 );
+    }
 
     $logger->debug("Running autoplugin on newly uploaded file $id...");
 

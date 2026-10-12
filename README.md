@@ -140,6 +140,7 @@ Shinobu 每个文件触发 4 次 —— **导致缓存永远积累不起来**。
 | 全库 ID 计算 | 数十小时（FUSE 读内容）| **分钟级**（只哈希路径）|
 | 全库扫描（Shinobu）| 卡死 / 数小时 | **55 秒**（254,133 文件 / 容器内实测）|
 | 增量入库 | 不支持（已禁用）| **inotify 实时，~2 秒** |
+| 多卷系列聚合 | 手动建 Tankoubon | **入库时自动聚合**（按路径）|
 | `/api/archives?start=0` | 秒级 | **亚秒级** |
 | `/api/archives`（省略 start）| **数十秒**（worker 被判死）| **亚秒级** |
 | 分类页渲染 | **分钟级 / 十几 MB** | 前端分页，**秒级** |
@@ -267,6 +268,14 @@ services:
 | `LRR_THUMBNAIL_MODE` | `lazy` | **懒生成缩略图**，首次打开才做（`auto` = 上游行为）|
 | `LRR_DATA_DIRECTORY` | `<content 根目录>` | 内容根目录（**不是** `LRR_CONTENT_DIR`，后者在代码中不存在）|
 
+**自动 Tankoubon 的 Redis 配置**（存于 `LRR_CONFIG`，非环境变量）：
+
+| 键 | 默认值 | 作用 |
+|---|---|---|
+| `tankoubon_series_dir` | `series` | 系列目录名；其下的 `<bucket>/<series_id>/<卷>` 会被聚合成 Tankoubon |
+| `tankoubon_oneshot_dir` | `oneshots` | 单本目录名；即使嵌在 `series` 下也不聚合 |
+| `tankoubon_library_roots` | 空 | **逗号分隔的库根绝对路径**，用于限定同名系列的归属；空 = 向后兼容（不加前缀）|
+
 **网盘挂载**（只读）：
 
 ```yaml
@@ -322,6 +331,10 @@ docker build -f tools/build/docker/Dockerfile -t lrr-custom:v15 .
 ```bash
 git diff --stat db310690..HEAD -- lib/ public/js/ tools/openapi.yaml
 ```
+
+**特别是 `lib/Shinobu.pm`** —— 自动 Tankoubon 挂在 `add_new_file` 的入库路径上，
+上游若重写该函数，需把 `auto_tankoubon_hook()` 调用点重新接回；
+`Config.pm` 的三个 getter 若被上游覆盖，`auto_tankoubon_hook` 会直接报错。
 
 ---
 

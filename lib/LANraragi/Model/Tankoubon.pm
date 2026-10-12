@@ -26,7 +26,7 @@ use LANraragi::Utils::Tags     qw(join_tags_to_string split_tags_to_array);
 my %TANK_METADATA = ( "name", 0, "summary", -1, "tags", -2, "progress", -3 );
 
 use Exporter 'import';
-our @EXPORT_OK = qw(tank_has_archive_in_set set_tank_tags get_tank_unified_tags update_tank_imputed_indexes serve_tankoubon_thumbnail update_tankoubon_thumbnail update_tank_progress);
+our @EXPORT_OK = qw(create_tankoubon add_to_tankoubon get_tankoubon get_tankoubon_list tank_has_archive_in_set set_tank_tags get_tank_unified_tags update_tank_imputed_indexes serve_tankoubon_thumbnail update_tankoubon_thumbnail update_tank_progress);
 
 # get_tankoubon_list(page)
 #   Returns a list of all the Tankoubon objects.
@@ -76,17 +76,37 @@ sub create_tankoubon ( $name, $tank_id ) {
 
     # Set all fields of the group object
     unless ( length($tank_id) ) {
-        $tank_id = "TANK_" . time();
 
-        my $isnewkey = 0;
-        until ($isnewkey) {
+        # CUSTOM FORK (fix/concurrent-tank-id): the stock generator mints
+        # "TANK_" . time(), a second-resolution value. Under MCE::Loop several
+        # workers call this within the same second, all compute the SAME id,
+        # and their exists()-then-write dance has a window where two of them
+        # both see the key as free. The result is two series sharing one Redis
+        # zset (and one Tank) -- reproduced live with SeriesAlpha/SeriesBeta.
+        #
+        # Fix: take a unique number from a Redis INCR counter instead of the
+        # clock. The id must stay exactly 10 digits: get_tankoubon_list() and
+        # friends enumerate tanks with keys('TANK_??????????'), and Edit.pm
+        # documents TANK_\d{10}, so any other width would silently hide tanks.
+        #
+        # The counter starts at time() so freshly minted ids stay in the same
+        # 10-digit range the stock generator produced, then advances by one per
+        # call. A value already in use (e.g. an existing time() id from an
+        # older build) is skipped so we never collide with legacy keys.
+        my $seq = $redis->incr("LRR_TANK_ID_SEQ");
+        if ( $seq < 1000000000 ) {
+            # First use (or counter below the 10-digit floor): jump the counter
+            # to the current clock value so fresh ids sit where the stock
+            # generator would have put them. SET to an absolute value, not
+            # INCRBY, so this stays idempotent no matter what $seq was.
+            $seq = time();
+            $redis->set( "LRR_TANK_ID_SEQ", $seq );
+        }
 
-            # Check if the group ID exists, move timestamp further if it does
-            if ( $redis->exists($tank_id) ) {
-                $tank_id = "TANK_" . ( time() + 1 );
-            } else {
-                $isnewkey = 1;
-            }
+        $tank_id = "TANK_" . $seq;
+        while ( $redis->exists($tank_id) ) {
+            $seq     = $redis->incr("LRR_TANK_ID_SEQ");
+            $tank_id = "TANK_" . $seq;
         }
     } else {
 

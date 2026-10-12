@@ -220,4 +220,22 @@ sub can_replacetitles    { return &get_redis_conf( "replacetitles",   "1" ) }
 sub get_language         { return &get_redis_conf( "language",        "auto" ) }
 sub get_excludednamespaces { return &get_redis_conf( "excludednamespaces", "source, date_added" ) }
 
+# CUSTOM FORK (feature/auto-tankoubon): the directory names that drive automatic
+# Tankoubon grouping. A path whose last-but-two segment equals tankoubon_series_dir
+# is aggregated into a series Tankoubon; one under tankoubon_oneshot_dir is kept
+# standalone. Both are user-configurable so the on-disk layout can change without
+# a code change -- the reader only cares about the identifiers, not the names.
+sub get_tankoubon_series_dir  { return &get_redis_conf( "tankoubon_series_dir",  "series" ) }
+sub get_tankoubon_oneshot_dir { return &get_redis_conf( "tankoubon_oneshot_dir", "oneshots" ) }
+
+# CUSTOM FORK (feature/auto-tankoubon): the library roots, comma-separated absolute
+# paths (e.g. "/mnt/wnacg,/mnt/pika"). They qualify the Tankoubon identity key so
+# that two libraries holding a same-named series (wnacg/series/10000 vs
+# pika/series/10000) do NOT collapse into one Tankoubon. The key becomes
+# "<library>:<series_id>", where <library> is the first configured root that
+# prefixes the archive path, or "" (legacy key, no prefix) when none matches or
+# the setting is empty. Empty is the backward-compatible default: existing
+# LRR_SERIES_MAP entries keep working until the roots are configured.
+sub get_tankoubon_library_roots { return &get_redis_conf( "tankoubon_library_roots", "" ) }
+
 1;
